@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# ChronoLM
-=======
 # AnchorFamily
 
 AnchorFamily is now a compact benchmark workspace for asking a sharper question:
@@ -150,4 +147,3 @@ python scripts/experiments/run_upstream_paper_models.py \
 The wrapper does not rewrite upstream hyperparameters or GPU ids. It runs each
 vendored benchmark script with `cwd=vendor/upstream_benchmark`, creates local
 benchmark logs there, and writes wrapper logs under `upstream_model_runs/`.
->>>>>>> AnchorFamily
