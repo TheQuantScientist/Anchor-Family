@@ -1,0 +1,18 @@
+% Requires \usepackage{graphicx}.
+% For Overleaf, place this file and anchor_family_architecture.pdf in figures/.
+\providecommand{\anchorfiguredir}{figures}
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{\anchorfiguredir/anchor_family_architecture.pdf}
+  \caption{\textbf{Anchor Family.} All variants operate on one shared library of
+  history-derived candidates. NaiveAnchor, ExpoAnchor, and SparseAnchor use
+  fixed or history-structure rules; ERMAnchor chooses the candidate and scalar
+  coefficient minimizing pooled train--validation risk; AutoAnchor applies an
+  ordered structural prior and falls back to ERM when no prior fires. The
+  selected specification $\theta_v=(a_v,\beta_v)$ is frozen per variable before
+  test evaluation. At inference, the selected candidate is evaluated at the
+  requested query times, postprocessed with $\beta_v$ and recent-history
+  clipping, and returned as the forecast. Dots denote observed values and open
+  dots denote predictions; the plotted trajectories are illustrative.}
+  \label{fig:anchor-family-architecture}
+\end{figure*}

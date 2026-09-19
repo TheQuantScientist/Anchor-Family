@@ -26,6 +26,9 @@ class ExpConfigs:
     collate_fn: str
     augmentation_ratio: int
     missing_rate: float
+    history_perturbation: str
+    history_keep_fraction: float
+    history_perturb_seed: int
     train_val_loader_shuffle: int
     train_val_loader_drop_last: int
     test_inference_time: int
@@ -70,6 +73,7 @@ class ExpConfigs:
     test_zero_shot: int
     test_dataset_statistics: int
     save_arrays: int
+    save_prediction_arrays: int
     load_checkpoints_test: int
 
     # model configs

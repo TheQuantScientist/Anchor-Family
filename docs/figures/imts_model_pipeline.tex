@@ -1,0 +1,110 @@
+% Horizontal taxonomy of representative learned IMTS forecasting models.
+% Requires tikz with arrows.meta and calc.
+\begin{figure*}[t]
+\centering
+\definecolor{imtsBlue}{HTML}{315D9C}
+\definecolor{imtsTeal}{HTML}{16857A}
+\definecolor{imtsRed}{HTML}{B94A48}
+\definecolor{imtsGold}{HTML}{A97913}
+\begin{tikzpicture}[
+  x=1cm,
+  y=1cm,
+  font=\sffamily,
+  >=Stealth,
+  panel/.style={
+    draw=black!70,
+    fill=black!1,
+    rounded corners=4pt,
+    line width=0.65pt
+  },
+  model/.style={
+    rounded corners=2pt,
+    line width=0.55pt,
+    align=center,
+    text width=6.9cm,
+    minimum width=7.25cm,
+    minimum height=0.62cm,
+    inner xsep=4pt,
+    inner ysep=2pt,
+    font=\scriptsize\sffamily
+  },
+  smallbox/.style={
+    rounded corners=2pt,
+    line width=0.55pt,
+    align=center,
+    text width=1.55cm,
+    minimum width=1.72cm,
+    minimum height=0.72cm,
+    inner sep=2pt,
+    font=\scriptsize\sffamily
+  },
+  flow/.style={-{Stealth[length=2.2mm,width=1.6mm]},line width=0.75pt,draw=black!70},
+  stage/.style={font=\small\sffamily},
+  heading/.style={font=\small\bfseries\sffamily,align=center}
+]
+
+% Common irregular input.
+\node[panel,minimum width=1.30cm,minimum height=3.80cm] (input) at (0.65,1.80) {};
+\node[heading,text width=1.05cm] at (0.65,3.25) {Irregular history};
+\draw[imtsBlue,line width=0.55pt]
+  (0.18,2.62) -- (0.42,2.62) -- (0.42,2.28) -- (0.67,2.28)
+  -- (0.67,2.50) -- (0.91,2.50) -- (0.91,2.05) -- (1.13,2.05);
+\draw[imtsTeal,line width=0.55pt]
+  (0.18,1.77) -- (0.37,1.77) -- (0.37,1.41) -- (0.61,1.41)
+  -- (0.61,1.63) -- (0.86,1.63) -- (0.86,1.18) -- (1.13,1.18);
+\fill[imtsRed] (0.28,0.62) circle (1.4pt);
+\fill[imtsRed] (0.54,0.82) circle (1.4pt);
+\fill[imtsRed] (0.86,0.48) circle (1.4pt);
+\fill[imtsRed] (1.08,0.72) circle (1.4pt);
+\node[font=\tiny\sffamily,align=center,text width=1.05cm] at (0.65,0.15)
+  {values, times, masks};
+
+% The rows are alternatives, not consecutive processing stages.
+\node[panel,minimum width=7.75cm,minimum height=4.10cm] (families) at (5.45,1.80) {};
+\node[heading] at (5.45,3.48) {Alternative learned IMTS backbones};
+
+\node[model,draw=imtsBlue,fill=imtsBlue!4] at (5.45,2.78)
+  {Decay-aware recurrent modeling: \textbf{GRU-D, CRU}};
+\node[model,draw=imtsTeal,fill=imtsTeal!4] at (5.45,2.02)
+  {Continuous latent dynamics: \textbf{NeuralFlows, GNeuralFlow}};
+\node[model,draw=imtsRed,fill=imtsRed!4] at (5.45,1.26)
+  {Time-aware attention and set/event encoding: \textbf{mTAN, SeFT, PrimeNet, Warpformer}};
+\node[model,draw=imtsGold,fill=imtsGold!5] at (5.45,0.50)
+  {Graph and adaptive patch aggregation: \textbf{Raindrop, tPatchGNN, GraFITi, APN}};
+
+% Common task-level readout.
+\node[panel,minimum width=2.10cm,minimum height=3.80cm] (readout) at (10.65,1.80) {};
+\node[heading,text width=1.75cm] at (10.65,3.25) {Forecast readout};
+\node[smallbox,draw=imtsBlue,fill=imtsBlue!4] at (10.65,2.27)
+  {Future-time query};
+\node[smallbox,draw=imtsTeal,fill=imtsTeal!4] at (10.65,1.28)
+  {Task head or decoder};
+\node[font=\tiny\sffamily,align=center,text width=1.70cm] at (10.65,0.27)
+  {model-specific implementation};
+
+% Forecast output.
+\node[panel,minimum width=1.25cm,minimum height=3.80cm] (output) at (12.85,1.80) {};
+\node[heading,text width=1.00cm] at (12.85,3.25) {Future targets};
+\draw[black!70,line width=0.45pt]
+  plot[smooth] coordinates {
+    (12.38,0.48) (12.50,0.80) (12.46,1.05) (12.72,1.31)
+    (12.61,1.58) (12.91,1.84) (12.78,2.11) (13.08,2.39)
+    (12.95,2.67) (13.24,2.93)
+  };
+
+\draw[flow] (input.east) -- (families.west);
+\draw[flow] (families.east) -- (readout.west);
+\draw[flow] (readout.east) -- (output.west);
+
+\node[stage] at (0.65,-0.58) {(a) observations};
+\node[stage] at (5.45,-0.58) {(b) alternative architectures};
+\node[stage] at (11.75,-0.58) {(c) forecasting};
+\end{tikzpicture}
+\caption{\textbf{Representative learned IMTS forecasting strategies.}
+All methods receive irregular observations, but the rows in the central panel
+denote alternative architecture families rather than sequential processing
+stages. Depending on the model, missingness handling, temporal representation,
+and cross-variable interaction may be integrated within a single backbone. The
+models then predict requested future values for masked evaluation.}
+\label{fig:imts-model-pipeline}
+\end{figure*}

@@ -1,0 +1,736 @@
+"""Run cross-baseline defense studies for the AnchorFamily paper.
+
+The suite covers AutoAnchor, APN, GraFITi, and tPatchGNN. Neural baselines use
+APN's native training/testing entry point; AutoAnchor uses the ChronoLM anchor
+runner in-process so CPU-only runs stay lightweight.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import subprocess
+import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = PROJECT_ROOT / "src"
+APN_ROOT = PROJECT_ROOT / "APN"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from chronolm.experiments.anchor_baseline import AnchorConfig, run as run_anchor  # noqa: E402
+
+DATASET_ORDER = ["P12", "MIMIC", "USHCN", "HumanActivity"]
+NEURAL_MODELS = ["APN", "GraFITi", "tPatchGNN"]
+ALL_MODELS = ["AutoAnchor", *NEURAL_MODELS]
+PERTURBATIONS = [
+    "original",
+    "shuffle_timestamps",
+    "swap_halves",
+    "drop_early_history",
+    "keep_last_obs",
+    "keep_time_gaps",
+]
+KEEP_FRACTIONS = [1.0, 0.75, 0.50, 0.25, 0.10]
+
+DATASETS = {
+    "P12": {
+        "apn_name": "P12",
+        "root": "storage/datasets/P12",
+        "enc_in": 36,
+        "default": (36, 3),
+        "windows": [(12, 1), (24, 3), (36, 3), (36, 6), (48, 6)],
+    },
+    "MIMIC": {
+        "apn_name": "MIMIC_III",
+        "root": "storage/datasets/MIMIC_III",
+        "enc_in": 96,
+        "default": (72, 3),
+        "windows": [(12, 1), (24, 3), (36, 3), (48, 6), (72, 3), (72, 6)],
+    },
+    "USHCN": {
+        "apn_name": "USHCN",
+        "root": "storage/datasets/USHCN",
+        "enc_in": 5,
+        "default": (150, 3),
+        "windows": [(50, 1), (100, 3), (150, 3), (150, 7)],
+    },
+    "HumanActivity": {
+        "apn_name": "HumanActivity",
+        "root": "storage/datasets/HumanActivity",
+        "enc_in": 12,
+        "default": (3000, 300),
+        "windows": [(1000, 100), (2000, 200), (3000, 300), (3000, 600)],
+    },
+}
+
+MODEL_DEFAULTS = {
+    "APN": {
+        "P12": {"d_model": 24, "lr": 0.03, "batch_size": 32, "dropout": 0.1, "apn_npatch": 20, "apn_te_dim": 8, "patience": 10, "epochs": 200},
+        "USHCN": {"d_model": 6, "lr": 0.01, "batch_size": 32, "dropout": 0.1, "apn_npatch": 100, "apn_te_dim": 32, "patience": 10, "epochs": 200},
+        "HumanActivity": {"d_model": 56, "lr": 0.01, "batch_size": 16, "dropout": 0.0, "apn_npatch": 300, "apn_te_dim": 8, "patience": 10, "epochs": 200},
+        "MIMIC": {"d_model": 16, "lr": 0.02, "batch_size": 32, "dropout": 0.0, "apn_npatch": 50, "apn_te_dim": 16, "patience": 10, "epochs": 200},
+    },
+    "GraFITi": {
+        "P12": {"d_model": 128, "n_layers": 2, "n_heads": 4, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+        "USHCN": {"d_model": 128, "n_layers": 4, "n_heads": 4, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+        "HumanActivity": {"d_model": 128, "n_layers": 2, "n_heads": 4, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+        "MIMIC": {"d_model": 256, "n_layers": 4, "n_heads": 1, "lr": 0.001, "batch_size": 16, "epochs": 300, "patience": 5},
+    },
+    "tPatchGNN": {
+        "P12": {"patch_len": 6, "n_heads": 1, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+        "USHCN": {"patch_len": 10, "n_heads": 1, "lr": 0.001, "batch_size": 16, "epochs": 300, "patience": 5},
+        "HumanActivity": {"patch_len": 100, "n_heads": 1, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+        "MIMIC": {"patch_len": 12, "n_heads": 1, "lr": 0.001, "batch_size": 32, "epochs": 300, "patience": 5},
+    },
+}
+
+
+@dataclass(frozen=True)
+class NeuralSpec:
+    suite: str
+    model: str
+    dataset: str
+    seq_len: int
+    pred_len: int
+    mode: str
+    history_perturbation: str = "original"
+    history_keep_fraction: float = 1.0
+    test_train_time: bool = False
+    test_inference_time: bool = False
+    test_gpu_memory: bool = False
+    test_flop: bool = False
+    save_prediction_arrays: bool = False
+
+    @property
+    def model_id(self) -> str:
+        return f"cross_{self.model}_{self.dataset}_sl{self.seq_len}_pl{self.pred_len}"
+
+    @property
+    def tag(self) -> str:
+        keep = int(round(self.history_keep_fraction * 100))
+        probe = ""
+        if self.test_train_time:
+            probe = "_traintime"
+        elif self.test_inference_time:
+            probe = "_inftime"
+        elif self.test_gpu_memory:
+            probe = "_gpumem"
+        elif self.test_flop:
+            probe = "_flop"
+        return f"{self.suite}_{self.model}_{self.dataset}_sl{self.seq_len}_pl{self.pred_len}_{self.history_perturbation}_keep{keep:03d}_{self.mode}{probe}"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run cross-baseline paper-defense experiments.")
+    parser.add_argument("--suite", action="append", default=[], choices=["lookback", "temporal", "sparsity", "paired", "seed", "efficiency", "all"], help="Suite(s) to run. Default: all.")
+    parser.add_argument("--dataset", action="append", default=[], help="Dataset(s): P12, MIMIC, USHCN, HumanActivity, all. Comma-separated allowed.")
+    parser.add_argument("--model", action="append", default=[], help="Model(s): AutoAnchor, APN, GraFITi, tPatchGNN, neural, all. Comma-separated allowed.")
+    parser.add_argument("--output-root", type=Path, default=PROJECT_ROOT / "cross_baseline_results")
+    parser.add_argument("--apn-results-root", type=Path, default=APN_ROOT / "storage" / "results")
+    parser.add_argument("--ablation-name", default="cross_baseline")
+    parser.add_argument("--gpu-id", type=int, default=0)
+    parser.add_argument("--use-gpu", type=int, default=1)
+    parser.add_argument("--neural-itr", type=int, default=3, help="Number of APN iterations/seeds for neural training. Seeds are 2024..2024+itr-1.")
+    parser.add_argument("--train-epochs", type=int, default=None, help="Override neural train epochs for all neural runs.")
+    parser.add_argument("--patience", type=int, default=None, help="Override neural early-stopping patience.")
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--eval-batch-multiplier", type=int, default=1, help="Multiply checkpoint evaluation batch sizes to improve GPU utilization.")
+    parser.add_argument("--history-perturb-seed", type=int, default=1729)
+    parser.add_argument("--anchor-progress-every", type=int, default=100)
+    parser.add_argument("--max-test-samples", type=int, default=None, help="Anchor-only smoke-test limit.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned commands without running them.")
+    parser.add_argument("--collect-only", action="store_true", help="Only collect existing results into summary tables.")
+    parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--skip-existing-neural-train", action="store_true", help="Skip neural training specs when a matching checkpoint tree already exists.")
+    parser.add_argument("--skip-existing-neural-eval", action="store_true", help="Skip neural eval specs when a matching metric/eval config already exists.")
+    parser.add_argument("--evaluation-only", action="store_true", help="Never train; require matching checkpoints and run evaluation specs only.")
+    parser.add_argument("--parallel-neural", type=int, default=1, help="Independent neural checkpoint groups to evaluate concurrently on the selected GPU.")
+    parser.add_argument("--parallel-anchor", type=int, default=1, help="Independent AutoAnchor conditions to evaluate concurrently on CPU.")
+    parser.add_argument("--overwrite-anchor", action="store_true")
+    parser.add_argument("--quick", action="store_true", help="Smoke test: neural itr=1, train_epochs=1, patience=1, first dataset/model/window only.")
+    return parser.parse_args()
+
+
+def selected_suites(args: argparse.Namespace) -> list[str]:
+    raw = args.suite or ["all"]
+    if "all" in raw:
+        return ["lookback", "temporal", "sparsity", "paired", "seed", "efficiency"]
+    return list(dict.fromkeys(raw))
+
+
+def selected_datasets(args: argparse.Namespace) -> list[str]:
+    raw = args.dataset or ["all"]
+    if any(item.lower() == "all" for item in raw):
+        values = DATASET_ORDER
+    else:
+        values = []
+        for item in raw:
+            for part in item.split(","):
+                name = part.strip()
+                if name not in DATASETS:
+                    raise ValueError(f"Unsupported dataset {name!r}")
+                if name not in values:
+                    values.append(name)
+    return values[:1] if args.quick else values
+
+
+def selected_models(args: argparse.Namespace) -> list[str]:
+    raw = args.model or ["all"]
+    values: list[str] = []
+    for item in raw:
+        for part in item.split(","):
+            name = part.strip()
+            if name == "all":
+                for model in ALL_MODELS:
+                    if model not in values:
+                        values.append(model)
+            elif name == "neural":
+                for model in NEURAL_MODELS:
+                    if model not in values:
+                        values.append(model)
+            elif name in ALL_MODELS:
+                if name not in values:
+                    values.append(name)
+            else:
+                raise ValueError(f"Unsupported model {name!r}")
+    return values[:1] if args.quick else values
+
+
+def windows_for(dataset: str, args: argparse.Namespace) -> list[tuple[int, int]]:
+    windows = DATASETS[dataset]["windows"]
+    return windows[:1] if args.quick else windows
+
+
+def default_window(dataset: str) -> tuple[int, int]:
+    return DATASETS[dataset]["default"]
+
+
+def build_neural_specs(args: argparse.Namespace) -> list[NeuralSpec]:
+    suites = selected_suites(args)
+    datasets = selected_datasets(args)
+    models = [model for model in selected_models(args) if model in NEURAL_MODELS]
+    specs: list[NeuralSpec] = []
+    needed_train: set[tuple[str, str, int, int]] = set()
+
+    def add_train(model: str, dataset: str, seq_len: int, pred_len: int, suite: str) -> None:
+        key = (model, dataset, seq_len, pred_len)
+        if key not in needed_train:
+            needed_train.add(key)
+            specs.append(NeuralSpec(suite=suite, model=model, dataset=dataset, seq_len=seq_len, pred_len=pred_len, mode="train"))
+
+    for suite in suites:
+        if suite == "lookback":
+            for dataset in datasets:
+                for seq_len, pred_len in windows_for(dataset, args):
+                    for model in models:
+                        add_train(model, dataset, seq_len, pred_len, suite)
+        elif suite == "temporal":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for model in models:
+                    add_train(model, dataset, seq_len, pred_len, suite)
+                    for perturbation in PERTURBATIONS[1:]:
+                        specs.append(NeuralSpec(suite=suite, model=model, dataset=dataset, seq_len=seq_len, pred_len=pred_len, mode="eval", history_perturbation=perturbation))
+        elif suite == "sparsity":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for model in models:
+                    add_train(model, dataset, seq_len, pred_len, suite)
+                    keep_values = (KEEP_FRACTIONS[1:2] if args.quick else KEEP_FRACTIONS[1:])
+                    for keep_fraction in keep_values:
+                        specs.append(NeuralSpec(suite=suite, model=model, dataset=dataset, seq_len=seq_len, pred_len=pred_len, mode="eval", history_keep_fraction=keep_fraction))
+        elif suite == "paired":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for model in models:
+                    add_train(model, dataset, seq_len, pred_len, suite)
+                    specs.append(
+                        NeuralSpec(
+                            suite=suite,
+                            model=model,
+                            dataset=dataset,
+                            seq_len=seq_len,
+                            pred_len=pred_len,
+                            mode="eval",
+                            save_prediction_arrays=True,
+                        )
+                    )
+        elif suite == "seed":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for model in models:
+                    add_train(model, dataset, seq_len, pred_len, suite)
+        elif suite == "efficiency":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for model in models:
+                    for probe in ["test_flop", "test_train_time", "test_inference_time", "test_gpu_memory"]:
+                        kwargs = {probe: True}
+                        specs.append(NeuralSpec(suite=suite, model=model, dataset=dataset, seq_len=seq_len, pred_len=pred_len, mode="probe", **kwargs))
+    return specs
+
+
+def base_hparams(model: str, dataset: str, args: argparse.Namespace) -> dict[str, object]:
+    params = dict(MODEL_DEFAULTS[model][dataset])
+    if args.quick:
+        params["epochs"] = 1
+        params["patience"] = 1
+    if args.train_epochs is not None:
+        params["epochs"] = args.train_epochs
+    if args.patience is not None:
+        params["patience"] = args.patience
+    return params
+
+
+def adjusted_patch_len(model: str, dataset: str, seq_len: int, params: dict[str, object]) -> int | None:
+    if model != "tPatchGNN":
+        return None
+    preferred = int(params["patch_len"])
+    if seq_len % preferred == 0:
+        return preferred
+    for candidate in [preferred, 300, 200, 150, 120, 100, 75, 60, 50, 48, 40, 36, 30, 25, 24, 20, 18, 16, 15, 12, 10, 8, 6, 5, 4, 3, 2, 1]:
+        if candidate <= seq_len and seq_len % candidate == 0:
+            return candidate
+    return 1
+
+
+
+def neural_checkpoint_root(spec: NeuralSpec, args: argparse.Namespace) -> Path:
+    data = DATASETS[spec.dataset]
+    return args.apn_results_root / args.ablation_name / str(data["apn_name"]) / spec.model / spec.model_id / f"{spec.seq_len}_{spec.pred_len}"
+
+
+def neural_train_exists(spec: NeuralSpec, args: argparse.Namespace) -> bool:
+    root = neural_checkpoint_root(spec, args)
+    if not root.exists():
+        return False
+    return any(root.glob("*/iter*/pytorch_model.bin")) or any(root.glob("*/iter*/model.safetensors"))
+
+
+def neural_eval_exists(spec: NeuralSpec, args: argparse.Namespace) -> bool:
+    root = neural_checkpoint_root(spec, args)
+    if not root.exists():
+        return False
+    for metric_path in root.glob("*/iter*/eval_*/metric.json"):
+        config_path = metric_path.with_name("eval_configs.yaml")
+        if not config_path.exists():
+            continue
+        config = yaml.safe_load(config_path.read_text()) or {}
+        if (
+            str(config.get("history_perturbation", "original")) == spec.history_perturbation
+            and abs(float(config.get("history_keep_fraction", 1.0)) - float(spec.history_keep_fraction)) < 1e-9
+        ):
+            if spec.save_prediction_arrays:
+                required = ["input_y.npy", "input_y_mask.npy", "input_sample_ID.npy", "output_pred.npy"]
+                if not all((metric_path.parent / name).exists() for name in required):
+                    continue
+            return True
+    return False
+
+
+def neural_command(spec: NeuralSpec, args: argparse.Namespace) -> list[str]:
+    data = DATASETS[spec.dataset]
+    params = base_hparams(spec.model, spec.dataset, args)
+    batch_size = int(params["batch_size"])
+    if spec.mode != "train":
+        batch_size *= args.eval_batch_multiplier
+
+    is_training = 1 if spec.mode == "train" else 0
+    cmd = [
+        sys.executable,
+        "main.py",
+        "--is_training", str(is_training),
+        "--model_id", spec.model_id,
+        "--model_name", spec.model,
+        "--dataset_root_path", str(data["root"]),
+        "--dataset_name", str(data["apn_name"]),
+        "--features", "M",
+        "--seq_len", str(spec.seq_len),
+        "--pred_len", str(spec.pred_len),
+        "--enc_in", str(data["enc_in"]),
+        "--dec_in", str(data["enc_in"]),
+        "--c_out", str(data["enc_in"]),
+        "--loss", "MSE",
+        "--use_gpu", str(args.use_gpu),
+        "--gpu_id", str(args.gpu_id),
+        "--use_multi_gpu", "0",
+        "--train_epochs", str(params["epochs"]),
+        "--patience", str(params["patience"]),
+        "--val_interval", "1",
+        "--itr", str(1 if args.quick else args.neural_itr),
+        "--batch_size", str(batch_size),
+        "--learning_rate", str(params["lr"]),
+        "--num_workers", str(args.num_workers),
+        "--ablation_name", args.ablation_name,
+        "--history_perturbation", spec.history_perturbation,
+        "--history_keep_fraction", f"{spec.history_keep_fraction:.6f}",
+        "--history_perturb_seed", str(args.history_perturb_seed),
+    ]
+    if spec.mode != "train":
+        cmd.extend(["--load_checkpoints_test", "1"])
+    if spec.save_prediction_arrays:
+        cmd.extend(["--save_prediction_arrays", "1"])
+    if spec.model == "APN":
+        cmd.extend([
+            "--d_model", str(params["d_model"]),
+            "--dropout", str(params["dropout"]),
+            "--apn_npatch", str(params["apn_npatch"]),
+            "--apn_te_dim", str(params["apn_te_dim"]),
+        ])
+    elif spec.model == "GraFITi":
+        cmd.extend([
+            "--d_model", str(params["d_model"]),
+            "--n_layers", str(params["n_layers"]),
+            "--n_heads", str(params["n_heads"]),
+        ])
+    elif spec.model == "tPatchGNN":
+        patch_len = adjusted_patch_len(spec.model, spec.dataset, spec.seq_len, params)
+        cmd.extend([
+            "--collate_fn", "collate_fn_patch",
+            "--patch_len", str(patch_len),
+            "--n_heads", str(params["n_heads"]),
+        ])
+    if spec.test_train_time:
+        cmd.extend(["--test_train_time", "1"])
+    if spec.test_inference_time:
+        cmd.extend(["--test_inference_time", "1"])
+    if spec.test_gpu_memory:
+        cmd.extend(["--test_gpu_memory", "1"])
+    if spec.test_flop:
+        cmd.extend(["--test_flop", "1"])
+    return cmd
+
+
+def run_neural_spec(spec: NeuralSpec, args: argparse.Namespace) -> None:
+    if spec.mode == "train" and args.skip_existing_neural_train and neural_train_exists(spec, args):
+        print(f"[{spec.suite}] skip existing train {spec.model} {spec.dataset} sl={spec.seq_len} pl={spec.pred_len}")
+        return
+    if spec.mode == "eval" and args.skip_existing_neural_eval and neural_eval_exists(spec, args):
+        print(f"[{spec.suite}] skip existing eval {spec.model} {spec.dataset} sl={spec.seq_len} pl={spec.pred_len} perturb={spec.history_perturbation} keep={spec.history_keep_fraction:g}")
+        return
+    log_dir = args.output_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{spec.tag}.log"
+    cmd = neural_command(spec, args)
+    printable = " ".join(cmd)
+    print(f"[{spec.suite}] {spec.mode} {spec.model} {spec.dataset} sl={spec.seq_len} pl={spec.pred_len} perturb={spec.history_perturbation} keep={spec.history_keep_fraction:g}")
+    print(f"  cd {APN_ROOT} && {printable}")
+    if args.dry_run:
+        return
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+    start = time.time()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(f"COMMAND: cd {APN_ROOT} && {printable}\n")
+        log.write(f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}\n")
+        log.flush()
+        result = subprocess.run(cmd, cwd=APN_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
+        log.write(f"\nEXIT_CODE: {result.returncode}\nWALL_TIME_S: {time.time() - start:.3f}\n")
+    if result.returncode != 0:
+        raise RuntimeError(f"Neural run failed with exit code {result.returncode}; see {log_path}")
+
+
+def run_neural_specs(specs: list[NeuralSpec], args: argparse.Namespace) -> list[str]:
+    if args.parallel_neural < 1:
+        raise ValueError("--parallel-neural must be at least 1")
+    if args.eval_batch_multiplier < 1:
+        raise ValueError("--eval-batch-multiplier must be at least 1")
+
+    if args.evaluation_only:
+        eval_specs = [spec for spec in specs if spec.mode != "train"]
+        missing = [spec for spec in eval_specs if not neural_train_exists(spec, args)]
+        if missing:
+            labels = ", ".join(
+                f"{spec.model}/{spec.dataset}/{spec.seq_len}/{spec.pred_len}"
+                for spec in missing
+            )
+            raise FileNotFoundError(f"Evaluation-only mode found no checkpoint for: {labels}")
+        specs = eval_specs
+
+    groups: dict[tuple[str, str, int, int], list[NeuralSpec]] = {}
+    for spec in specs:
+        key = (spec.model, spec.dataset, spec.seq_len, spec.pred_len)
+        groups.setdefault(key, []).append(spec)
+
+    def run_group(group: list[NeuralSpec]) -> list[str]:
+        failures: list[str] = []
+        for spec in group:
+            try:
+                run_neural_spec(spec, args)
+            except Exception as exc:
+                if not args.continue_on_error:
+                    raise
+                failures.append(f"{spec.tag}: {exc}")
+        return failures
+
+    failures: list[str] = []
+    if args.parallel_neural == 1 or len(groups) <= 1:
+        for group in groups.values():
+            failures.extend(run_group(group))
+        return failures
+
+    with ThreadPoolExecutor(max_workers=min(args.parallel_neural, len(groups))) as pool:
+        futures = [pool.submit(run_group, group) for group in groups.values()]
+        for future in as_completed(futures):
+            failures.extend(future.result())
+    return failures
+
+
+def anchor_specs(args: argparse.Namespace) -> list[dict[str, object]]:
+
+
+    suites = selected_suites(args)
+    datasets = selected_datasets(args)
+    models = selected_models(args)
+    if "AutoAnchor" not in models:
+        return []
+    specs: list[dict[str, object]] = []
+    for suite in suites:
+        if suite == "lookback":
+            for dataset in datasets:
+                for seq_len, pred_len in windows_for(dataset, args):
+                    specs.append({"Suite": suite, "Dataset": dataset, "Seq_len": seq_len, "Pred_len": pred_len, "History_perturbation": "original", "History_keep_fraction": 1.0})
+        elif suite == "temporal":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for perturbation in PERTURBATIONS:
+                    specs.append({"Suite": suite, "Dataset": dataset, "Seq_len": seq_len, "Pred_len": pred_len, "History_perturbation": perturbation, "History_keep_fraction": 1.0})
+        elif suite == "sparsity":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                for keep_fraction in (KEEP_FRACTIONS[:2] if args.quick else KEEP_FRACTIONS):
+                    specs.append({"Suite": suite, "Dataset": dataset, "Seq_len": seq_len, "Pred_len": pred_len, "History_perturbation": "original", "History_keep_fraction": keep_fraction})
+        elif suite == "seed":
+            for dataset in datasets:
+                seq_len, pred_len = default_window(dataset)
+                specs.append({"Suite": suite, "Dataset": dataset, "Seq_len": seq_len, "Pred_len": pred_len, "History_perturbation": "original", "History_keep_fraction": 1.0})
+    return specs
+
+
+def run_anchor_spec(spec: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    keep_tag = int(round(float(spec["History_keep_fraction"]) * 100))
+    run_tag = f"{spec['Suite']}_sl{spec['Seq_len']}_pl{spec['Pred_len']}_{spec['History_perturbation']}_keep{keep_tag:03d}"
+    config = AnchorConfig(
+        dataset_name=str(spec["Dataset"]),
+        anchor_method="AutoAnchor",
+        seq_len=int(spec["Seq_len"]),
+        pred_len=int(spec["Pred_len"]),
+        max_test_samples=args.max_test_samples,
+        history_perturbation=str(spec["History_perturbation"]),
+        history_keep_fraction=float(spec["History_keep_fraction"]),
+        random_seed=args.history_perturb_seed,
+        overwrite=args.overwrite_anchor,
+        run_name=f"cross_auto_anchor_{str(spec['Dataset']).lower()}_{run_tag}",
+        output_dir=args.output_root / "anchor" / str(spec["Dataset"]).lower(),
+        progress_every=args.anchor_progress_every,
+    )
+    result = run_anchor(config)
+    result.update(spec)
+    result["Model"] = "AutoAnchor"
+    return result
+
+
+def run_anchor_specs(args: argparse.Namespace) -> None:
+    specs = anchor_specs(args)
+    if not specs:
+        return
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    summary_path = args.output_root / "anchor_summary.csv"
+    existing: list[dict[str, object]] = []
+    if summary_path.exists():
+        existing = list(csv.DictReader(summary_path.open()))
+    rows = existing
+    seen = {(r.get("Suite"), r.get("Dataset"), str(r.get("Seq_len")), str(r.get("Pred_len")), r.get("History_perturbation"), str(r.get("History_keep_fraction"))) for r in rows}
+    pending: list[dict[str, object]] = []
+    for spec in specs:
+        key = (spec["Suite"], spec["Dataset"], str(spec["Seq_len"]), str(spec["Pred_len"]), spec["History_perturbation"], str(spec["History_keep_fraction"]))
+        if key in seen and not args.overwrite_anchor:
+            continue
+        keep_tag = int(round(float(spec["History_keep_fraction"]) * 100))
+        run_tag = f"{spec['Suite']}_sl{spec['Seq_len']}_pl{spec['Pred_len']}_{spec['History_perturbation']}_keep{keep_tag:03d}"
+        if args.overwrite_anchor:
+            rows = [row for row in rows if (row.get("Suite"), row.get("Dataset"), str(row.get("Seq_len")), str(row.get("Pred_len")), row.get("History_perturbation"), str(row.get("History_keep_fraction"))) != key]
+            seen.discard(key)
+        print(f"[anchor:{spec['Suite']}] AutoAnchor {spec['Dataset']} sl={spec['Seq_len']} pl={spec['Pred_len']} perturb={spec['History_perturbation']} keep={spec['History_keep_fraction']:g}")
+        if args.dry_run:
+            print("  " + " ".join([
+                sys.executable, "run_anchor_baseline.py", "--dataset", str(spec["Dataset"]), "--method", "AutoAnchor",
+                "--seq-len", str(spec["Seq_len"]), "--pred-len", str(spec["Pred_len"]), "--history-perturbation", str(spec["History_perturbation"]),
+                "--history-keep-fraction", str(spec["History_keep_fraction"]), "--run-tag", run_tag,
+            ]))
+            continue
+        pending.append(spec)
+
+    if args.dry_run:
+        return
+
+    def record(result: dict[str, object]) -> None:
+        rows.append(result)
+        pd.DataFrame(rows).to_csv(summary_path, index=False)
+
+    if args.parallel_anchor == 1 or len(pending) <= 1:
+        for spec in pending:
+            record(run_anchor_spec(spec, args))
+    else:
+        with ProcessPoolExecutor(max_workers=min(args.parallel_anchor, len(pending))) as pool:
+            futures = {pool.submit(run_anchor_spec, spec, args): spec for spec in pending}
+            for future in as_completed(futures):
+                spec = futures[future]
+                try:
+                    record(future.result())
+                except Exception as exc:
+                    if not args.continue_on_error:
+                        for remaining in futures:
+                            remaining.cancel()
+                        raise
+                    print(
+                        f"[anchor:{spec['Suite']}] FAILED {spec['Dataset']} "
+                        f"sl={spec['Seq_len']} pl={spec['Pred_len']}: {exc}",
+                        file=sys.stderr,
+                    )
+    if not args.dry_run:
+        pd.DataFrame(rows).to_csv(summary_path, index=False)
+        print(f"Anchor summary written to {summary_path}")
+
+
+def collect_neural_metrics(args: argparse.Namespace) -> pd.DataFrame:
+    root = args.apn_results_root / args.ablation_name
+    records: list[dict[str, object]] = []
+    if not root.exists():
+        return pd.DataFrame(records)
+    for metric_path in root.glob("*/*/*/*/*/iter*/eval_*/metric.json"):
+        try:
+            metrics = json.loads(metric_path.read_text())
+        except Exception:
+            continue
+        eval_config_path = metric_path.with_name("eval_configs.yaml")
+        config = {}
+        if eval_config_path.exists():
+            config = yaml.safe_load(eval_config_path.read_text()) or {}
+        else:
+            train_config_path = metric_path.parent.parent / "configs.yaml"
+            if train_config_path.exists():
+                config = yaml.safe_load(train_config_path.read_text()) or {}
+        dataset_apn = config.get("dataset_name", metric_path.parts[-8])
+        dataset = "MIMIC" if dataset_apn == "MIMIC_III" else str(dataset_apn)
+        model = str(config.get("model_name", metric_path.parts[-7]))
+        seq_len = int(config.get("seq_len", metric_path.parts[-5].split("_")[0]))
+        pred_len = int(config.get("pred_len", metric_path.parts[-5].split("_")[1]))
+        perturbation = str(config.get("history_perturbation", "original"))
+        keep_fraction = float(config.get("history_keep_fraction", 1.0))
+        condition = perturbation if perturbation != "original" else f"keep_{int(round(keep_fraction * 100))}pct"
+        if condition == "keep_100pct":
+            condition = "original"
+        iter_name = metric_path.parent.parent.name
+        seed_index = int(iter_name.replace("iter", "")) if iter_name.startswith("iter") else -1
+        records.append({
+            "Source": "neural",
+            "Model": model,
+            "Dataset": dataset,
+            "Seq_len": seq_len,
+            "Pred_len": pred_len,
+            "History_perturbation": perturbation,
+            "History_keep_fraction": keep_fraction,
+            "Condition": condition,
+            "Seed_index": seed_index,
+            "Seed": 2024 + seed_index if seed_index >= 0 else None,
+            "MAE": float(metrics.get("MAE", float("nan"))),
+            "MSE": float(metrics.get("MSE", float("nan"))),
+            "Metric_path": str(metric_path),
+        })
+    frame = pd.DataFrame(records)
+    if not frame.empty:
+        frame = frame.sort_values(["Dataset", "Model", "Seq_len", "Pred_len", "Condition", "Seed_index", "Metric_path"])
+        frame = frame.drop_duplicates(
+            ["Dataset", "Model", "Seq_len", "Pred_len", "Condition", "Seed_index"],
+            keep="last",
+        )
+    return frame
+
+
+def collect_anchor_metrics(args: argparse.Namespace) -> pd.DataFrame:
+    path = args.output_root / "anchor_summary.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    frame = pd.read_csv(path)
+    if frame.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame({
+        "Source": "anchor",
+        "Model": "AutoAnchor",
+        "Dataset": frame["Dataset"],
+        "Seq_len": frame["Seq_len"].astype(int),
+        "Pred_len": frame["Pred_len"].astype(int),
+        "History_perturbation": frame.get("History_perturbation", "original"),
+        "History_keep_fraction": frame.get("History_keep_fraction", 1.0).astype(float),
+        "Seed_index": -1,
+        "Seed": None,
+        "MAE": frame["MAE_scaled"].astype(float),
+        "MSE": frame["MSE_scaled"].astype(float),
+        "Metric_path": frame.get("output_csv", ""),
+    })
+    out["Condition"] = out.apply(lambda r: r["History_perturbation"] if r["History_perturbation"] != "original" else ("original" if float(r["History_keep_fraction"]) >= 1.0 else f"keep_{int(round(float(r['History_keep_fraction']) * 100))}pct"), axis=1)
+    return out
+
+
+def collect_all(args: argparse.Namespace) -> pd.DataFrame:
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    neural = collect_neural_metrics(args)
+    anchor = collect_anchor_metrics(args)
+    combined = pd.concat([anchor, neural], ignore_index=True)
+    if not combined.empty:
+        combined = combined.dropna(subset=["MAE", "MSE"])
+        combined.to_csv(args.output_root / "cross_baseline_metrics.csv", index=False)
+        if not neural.empty:
+            neural.to_csv(args.output_root / "neural_metrics.csv", index=False)
+    print(f"Collected {len(anchor)} anchor rows and {len(neural)} neural rows into {args.output_root / 'cross_baseline_metrics.csv'}")
+    return combined
+
+
+def run_table_generator(args: argparse.Namespace) -> None:
+    script = PROJECT_ROOT / "ablation" / "cross_baseline_tables.py"
+    if not script.exists() or args.dry_run:
+        return
+    subprocess.run([sys.executable, str(script), "--input", str(args.output_root / "cross_baseline_metrics.csv"), "--output-dir", str(args.output_root / "ablation")], cwd=PROJECT_ROOT, check=False)
+
+
+def main() -> None:
+    args = parse_args()
+    if args.parallel_anchor < 1:
+        raise ValueError("--parallel-anchor must be at least 1")
+    if args.quick:
+        args.neural_itr = 1
+        args.num_workers = 0
+    args.output_root.mkdir(parents=True, exist_ok=True)
+
+    if not args.collect_only:
+        errors: list[str] = []
+        try:
+            run_anchor_specs(args)
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            errors.append(f"AutoAnchor: {exc}")
+        errors.extend(run_neural_specs(build_neural_specs(args), args))
+        if errors:
+            failure_path = args.output_root / "run_failures.txt"
+            failure_path.write_text("\n".join(errors) + "\n")
+            print(f"Failures written to {failure_path}")
+    if not args.dry_run:
+        collect_all(args)
+        run_table_generator(args)
+
+
+if __name__ == "__main__":
+    main()

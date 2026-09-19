@@ -1,7 +1,8 @@
 import importlib
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, default_collate
 from utils.ExpConfigs import ExpConfigs
+from data.data_provider.perturbations import apply_history_controls
 
 def data_provider(configs: ExpConfigs, flag: str, shuffle_flag: bool = None, drop_last: bool = None) -> tuple[Dataset, DataLoader]:
     '''
@@ -36,6 +37,15 @@ def data_provider(configs: ExpConfigs, flag: str, shuffle_flag: bool = None, dro
         # DEBUG: temporal change
         # **configs._asdict()
     )
+
+    if configs.history_perturbation != "original" or float(configs.history_keep_fraction) < 1.0:
+        base_collate_fn = collate_fn or default_collate
+
+        def controlled_collate_fn(batch):
+            return apply_history_controls(base_collate_fn(batch), configs=configs, flag=flag)
+
+        collate_fn = controlled_collate_fn
+
     data_loader = DataLoader(
         data_set,
         batch_size=batch_size,

@@ -39,6 +39,9 @@ parser.add_argument('--freq', type=str, choices=['s', 't', 'h', 'd', 'b', 'w', '
 parser.add_argument('--collate_fn', type=str, default="collate_fn", help='Name of the function as a custom collate_fn for dataloader. By default, datasets without collate_fn defined in data/data_provider/datasets/SOME_DATASET_NAME will use default collate_fn of Pytorch. Refer to data/data_provider/data_factory.py for implementation detail.')
 parser.add_argument('--augmentation_ratio', type=int, default=0, help="How many times to augment")
 parser.add_argument('--missing_rate', type=float, default=0., help="Manually mask out some observations.")
+parser.add_argument('--history_perturbation', type=str, choices=["original", "shuffle_timestamps", "swap_halves", "drop_early_history", "keep_last_obs", "keep_time_gaps"], default="original", help="Evaluation-time history perturbation for temporal-information tests.")
+parser.add_argument('--history_keep_fraction', type=float, default=1.0, help="Fraction of observed history values to keep after collation. Use values below 1 for sparsity/thinning tests.")
+parser.add_argument('--history_perturb_seed', type=int, default=1729, help="Seed for deterministic history perturbation/thinning tests.")
 parser.add_argument('--train_val_loader_shuffle', type=int, default=None, help="By default, this parameter is unset, and train and val loader is shuffled.")
 parser.add_argument('--train_val_loader_drop_last', type=int, default=None, help="By default, this parameter is unset, and train and val loader will drop the last batch if the number of samples is not sufficient.")
 
@@ -82,6 +85,7 @@ parser.add_argument('--test_gpu_memory', type=int, default=0, help="Test model's
 parser.add_argument('--test_dataset_statistics', type=int, default=0, help="Test dataset's statistics.")
 parser.add_argument('--test_zero_shot', type=int, default=0, help='Test zero-shot performance. i.e., without training.')
 parser.add_argument('--save_arrays', type=int, default=0, help='whether to save model input and output as .npy files, for later visualization')
+parser.add_argument('--save_prediction_arrays', type=int, default=0, help='save only targets, target masks, sample IDs, and predictions for paired evaluation')
 parser.add_argument('--load_checkpoints_test', type=int, default=1, help='whether to load checkpoint during testing')
 parser.add_argument('--test_inference_time', type=int, default=0, help="Test model's inference time. See utils/tools for usage")
 # model configs

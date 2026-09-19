@@ -7,13 +7,15 @@
 \IfFileExists{math_commands.tex}{\input{math_commands.tex}}{}
 
 \usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,calc,positioning,fit,backgrounds}
 \usepackage{url}
 
-\title{Are Neural Models Necessary for \\ Irregular Time Series Forecasting?}
+\title{Are Neural Models Always Necessary For \\ Irregular Time Series Forecasting?}
 
 % Anonymous submission. Replace after acceptance or when preparing a non-anonymous draft.
 \author{Anonymous Authors}
@@ -29,206 +31,383 @@
 
 \maketitle
 
+
 \begin{abstract}
-Irregular time-series forecasting is commonly treated as a setting that requires
-specialized neural architectures for handling uneven timestamps, missingness,
-and variable-specific observation patterns. This paper asks a deliberately
-simple question: are neural models necessary for the standard irregular
-forecasting benchmarks? We introduce an \family{} of deterministic, training-free
-history anchors and a unified selector, \method{}, evaluated under the same
-splits, scaling, masks, and metrics as the APN benchmark protocol. Early results
-show that \method{} matches or exceeds APN-style reported performance on
-PhysioNet, USHCN, and HumanActivity, while requiring no backpropagation and no
-GPU training. The goal of the paper is not to claim that neural models are never
-useful, but to show that current benchmark conclusions are incomplete unless
-strong non-neural anchor baselines are included.
+Irregular multivariate time-series (IMTS) forecasting is commonly assumed to require specialized neural architectures for their asynchronous nature. We audit this assumption by asking how much standard benchmark performance is explained by simple structure already present in the observed history. We introduce the Anchor family, a set of transparent, gradient-free diagnostic controls based on persistence, smoothing, sparse repetition, recurrence, and non-test empirical rule selection. Across global IMTS benchmarks and novel neural baselines under matched protocols, our Anchor variants achieve an optimal standard-window error in every dataset--metric setting, while AutoAnchor remains competitive across lookback--horizon sweeps and paired entity-level tests. Perturbation, thinning, bootstrap, and ablation analyses show that different datasets reward distinctive low-complexity historical structures, and that neural models regain advantages when history is insufficient or temporal configuration becomes demanding. These results suggest that current IMTS benchmarks can overstate the necessity of complex neural representations, thereby motivating stronger non-neural diagnostic controls first.
 \end{abstract}
+
 
 \section{Introduction}
 
+Irregular multivariate time series (IMTS) forecasting is commonly treated as a
+problem whose defining difficulties require specialized neural architectures.
+Unlike regularly sampled sequences, IMTS data contain asynchronous observations,
+variable-specific missingness, uneven time gaps, and partially observed future
+targets. These properties have motivated architectures based on missingness-aware
+recurrence~\citep{grud}, interpolation~\citep{shukla2019interp}, attention
+over continuous time~\citep{mtan,primenet}, latent continuous
+dynamics~\citep{neuralode2,latentODE,neuralCDE,neuralflows2,cru}, graph message
+passing~\citep{raindrop2,gneuralflow,grafiti}, and adaptive
+patching~\citep{tPatchGNN,apn}. The usual interpretation of leaderboard
+improvements is that these models have learned useful irregular-time
+representations.
+
+This paper examines a narrower but important question: \emph{do today's standard
+IMTS forecasting benchmarks require such representations to achieve strong
+aggregate performance?} The distinction matters. A model can perform well on an
+irregular benchmark because it reasons over asynchronous temporal structure, but
+it can also perform well because the next observed value is often close to a
+recent value, a smoothed level, a repeated sparse baseline, or a recurring local
+pattern. In the latter case, a benchmark may reward anchoring to observed
+history strongly enough that complex neural models appear necessary even when a
+transparent deterministic rule explains much of the score. This study therefore frames the problem as a benchmark audit rather than as a new
+state-of-the-art forecasting method. We introduce the \emph{Anchor family}, a
+small ladder of deterministic diagnostic controls. NaiveAnchor repeats the most
+recent value, ExpoAnchor applies horizon-aware exponential smoothing,
+SparseAnchor probes repeated-value histories, ERMAnchor selects a candidate rule
+by non-test empirical risk, and AutoAnchor augments this selection with generic
+history-structure priors. Each rule is selected per variable using only
+non-test data and is frozen before test evaluation. The family has no neural
+parameters, no backpropagation, and no dataset- or variable-name lookup table;
+its purpose is to estimate how much predictive signal is already present in the
+observed history.
+
+Across irregular time-series datasets, this diagnostic
+control is surprisingly competitive with strong neural baselines under matched
+benchmark protocols. The result should not be read as a claim that neural models
+are generally unnecessary. Instead, it extends recent lessons from regular
+forecasting benchmarks, where simple or lightweight models challenged the
+necessity of increasingly complex Transformer variants~\citep{Zeng2023LTSFLinear,TFB2024,SimpleTM2025}.
+Several established IMTS benchmarks contain enough persistence, smoothing,
+sparse repetition, and recurrence for simple history-derived rules to match or
+exceed learned models on important aggregate metrics. The scientific question is
+therefore not only which architecture ranks first, but what predictive
+information remains after these low-complexity structures have been controlled
+for.
+
+Our contributions are:
 \begin{itemize}
-    \item Motivate irregular time-series forecasting (IMTS): clinical records,
-    climate series, human activity traces, and other domains where observations
-    arrive at uneven times.
-    \item Present the dominant assumption: because the data are irregular,
-    sparse, and partially observed, strong forecasting requires specialized
-    neural architectures.
-    \item Introduce the central question of the paper: \emph{how much of current
-    IMTS benchmark performance is explained by local history anchoring rather
-    than learned temporal representation?}
-    \item Position APN as the current strong reference point: a recent, simple,
-    effective neural baseline with public scripts, benchmark datasets, and
-    reported results.
-    \item State the main thesis: a small deterministic \family{} can match or
-    outperform recent neural IMTS models under the same APN protocol.
-    \item Contributions:
-    \begin{itemize}
-        \item Define the \family{}: NaiveAnchor, ExpoAnchor, SparseAnchor,
-        ERMAnchor, and \method{}.
-        \item Show how \method{} performs model selection over a shared anchor
-        library without gradient training or test-label tuning.
-        \item Re-evaluate APN benchmark datasets using APN-compatible splits,
-        scaling, masks, and global MAE/MSE metrics.
-        \item Provide ablations and diagnostic analyses that explain when anchor
-        methods succeed and when neural models may still be needed.
-    \end{itemize}
+    \item We formulate the Anchor family as transparent, gradient-free
+    diagnostic controls for IMTS forecasting, designed to measure signal
+    available without intricate learned representations.
+    \item We conduct a matched benchmark audit against representative neural
+    IMTS models using the same splits, preprocessing, masks, scaling, and
+    evaluation metrics for fair comparison.
+    \item We identify both regimes that reward anchoring and regimes where
+    richer cross-variable temporal modeling remains vital, clarifying future IMTS benchmarking directions.
 \end{itemize}
+
 
 \section{Background and Motivation}
 
-\subsection{Irregular time-series forecasting}
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/general.jpg}
+  \caption{General modeling pipeline for irregular multivariate time series by neural models \citep{cru, ContiFormer2023, grud, grafiti, mtan,seft, gneuralflow,tPatchGNN,apn, warpformer}. Overall, raw asynchronous observations are normalized and enriched with timing and missingness information, then embedded into a latent representation that captures temporal dynamics and cross-variable dependencies. This representation is finally decoded for downstream tasks.}
+  \label{fig:imts-general-pipeline}
+\end{figure*}
 
-\begin{itemize}
-    \item Define the IMTS setting: each variable has an observation history
-    $H_v=\{(t_i,x_i)\}_{i=1}^{n_v}$ with uneven timestamps and missing targets.
-    \item Explain why common neural approaches use interpolation, attention,
-    message passing, latent ODEs, patching, or time-aware aggregation.
-    \item Clarify the benchmark task considered here: predict the next observed
-    target values for each variable under APN-style masking and scaling.
-\end{itemize}
+\paragraph{Learned representations for irregular time.}
+Early IMTS methods made missingness and elapsed time explicit parts of the
+model. GRU-D~\citep{grud} decays inputs and hidden states according to time
+since observation, interpolation-prediction networks~\citep{shukla2019interp}
+regularize sparse measurements before prediction, mTAN~\citep{mtan} uses
+attention over continuous-time embeddings, and SeFT~\citep{seft} treats
+irregular observations as a set rather than forcing them onto a regular grid.
+Transformer-based approaches further model irregular temporal and cross-variable
+interactions directly, including CoFormer~\citep{CoFormer2023}, while Rough
+Transformers introduce signature-based continuous-time representations
+~\citep{RoughTransformer2024}. A second line of work models hidden trajectories
+in continuous time, beginning with Neural ODEs models~\citep{neuralode2, latentODE}, followed by neural controlled
+differential equations~\citep{neuralCDE, neuralflows2,cru}. Graph- and patch-based methods  \citet{raindrop2,gneuralflow,grafiti,tPatchGNN,apn} add structure over
+variables, observations, and temporal scales.
+Recent work further expands this design space through channel-harmony
+modeling~\citep{TimeCHEAT2025}, hierarchical patch graphs~\citep{HiPatch2025},
+hypergraph dependency modeling~\citep{HyperIMTS2025}, and canonical
+pre-alignment~\citep{KAFNet2026}. Figure~\ref{fig:imts-general-pipeline} summarizes the common neural pipeline.
 
-\subsection{The role of simple baselines}
 
-\begin{itemize}
-    \item Connect to the broader lesson from recent time-series work: complex
-    architectures can be overstated when simple baselines are weak or missing.
-    \item Explain why this question is sharper for IMTS: irregularity often
-    motivates architectural complexity, but many horizons may still be governed
-    by persistence, smoothing, sparse repetition, or local stability.
-    \item State the diagnostic goal: an anchor baseline should be strong enough
-    that a neural model must demonstrate learning beyond local history.
-\end{itemize}
+\paragraph{Why stronger diagnostic controls are needed.}
+The aforementioned IMTS architectures address real challenges in irregular forecasting, but benchmark performance alone does not reveal which modeling capabilities are actually necessary. Many datasets contain target values that are locally persistent, slowly varying, frequently repeated, or approximately recurrent, allowing expressive neural models to achieve strong aggregate scores partly by exploiting simple history-derived structure. This concern is not unique to IMTS. In long-sequence forecasting, increasingly specialized Transformer architectures were motivated by the need to capture complex temporal dependencies~\citep{informer}, yet later studies showed that direct multi-step linear models and other lightweight alternatives can remain surprisingly competitive under comparable benchmark protocols~\citep{Zeng2023LTSFLinear,SimpleTM2025}. Large-scale benchmarking further demonstrates that conclusions can change substantially when datasets, preprocessing, horizons, and evaluation procedures are standardized across methods~\citep{TFB2024}. We therefore frame IMTS benchmarking as a scientific control problem: before attributing performance gains to learned irregular-time representations, one should first establish how much of the benchmark signal can already be explained by transparent history-derived structure under the same splits, scaling, masking, horizons, and evaluation metrics.
 
-\subsection{APN benchmark protocol}
 
-\begin{itemize}
-    \item Summarize the APN benchmark suite: PhysioNet, USHCN, HumanActivity,
-    and MIMIC.
-    \item State that this paper uses APN loaders, splits, sequence lengths,
-    forecast horizons, scaling, masks, and global scaled MAE/MSE wherever
-    available.
-    \item Separate APN-reported neural baselines from our single-run anchor
-    results.
-\end{itemize}
+\paragraph{Position of this work.}
+We do not argue that recurrence, attention, latent dynamics, or graph learning are unnecessary for IMTS. Rather, their necessity should be demonstrated against controls that capture persistence, smoothing, sparse repetition, and recurrence under the same evaluation protocol. AutoAnchor serves as such a diagnostic: matching learned models indicates that benchmark scores alone do not establish the need for complex irregular-temporal or cross-variable representations, while its failures reveal regimes where neural modeling may provide genuine value. In addition, since recent methods such as APN~\citep{apn} already reduce computational cost, the central question is not efficiency, but whether increasing architectural complexity is empirically justified beyond strong non-neural controls, sparking pathways for customizing statistical models.
 
-\section{Problem Setup}
 
-\subsection{Forecasting task}
 
-\begin{itemize}
-    \item For each variable $v$, the model observes an irregular history
-    $H_v$ and predicts the next $K$ target values.
-    \item Inputs include both values and timestamps; the anchor methods do not
-    discard time.
-    \item Forecasts are evaluated only where the APN target mask indicates
-    observed ground-truth values.
-\end{itemize}
-
-\subsection{Metrics}
-
-\begin{itemize}
-    \item Report APN-style global masked scaled MAE and MSE.
-    \item Emphasize MSE because large errors are important in clinical and
-    scientific forecasting.
-    \item In final experiments, include standard deviations when APN exposes
-    multiple seeds or splits; otherwise explicitly report fixed-split,
-    single-run results.
-\end{itemize}
-
-\subsection{Fair comparison protocol}
-
-\begin{itemize}
-    \item Anchor selection uses only train and validation targets.
-    \item The test split is evaluated once after the algorithm is fixed.
-    \item Dataset-specific code is restricted to APN-compatible loading and
-    metadata; anchor selection does not branch on dataset or variable names.
-\end{itemize}
 
 \section{The Anchor Family}
 
-\IfFileExists{docs/tikz/anchor_family.tex}{%
-    \input{docs/tikz/anchor_family}%
-}{%
-    \input{../tikz/anchor_family}%
+\begin{figure*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.35}
+
+% ===== Outer border =====
+\setlength{\fboxsep}{8pt}
+\fbox{%
+\begin{minipage}{0.96\textwidth}
+\centering
+
+% ===== Shared anchor class =====
+\setlength{\fboxsep}{3pt}
+\fbox{%
+\begin{minipage}{0.961\textwidth}
+\centering
+\vspace{0.25em}
+\textbf{Shared anchor class}
+\[
+\mathcal A=\left\{a:
+ f_a(\mathcal H_v,t^*)=\sum_{\ell=1}^{J_a}w_{a,\ell}
+ g_{a,\ell}(\mathcal H_v,t^*),\quad
+ w_{a,\ell}\ge 0,\ \sum_{\ell}w_{a,\ell}=1
+\right\}.
+\]
+\vspace{-0.8em}
+% {\footnotesize Primitive rules $g$ include last value, local level summaries,
+% mode, EMA, bounded trend, and phase-nearest lookup.}
+\vspace{0.35em}
+\end{minipage}%
 }
 
-\subsection{Design principle}
+\vspace{0.55em}
 
-\begin{itemize}
-    \item Treat forecasting as selecting a stable reference point from the
-    irregular observed history.
-    \item Use timestamp-aware candidate summaries rather than learned latent
-    states.
-    \item Make the baseline transparent: every forecast should be traceable to a
-    specific anchor rule and non-test selection criterion.
-\end{itemize}
+% ===== Anchor variants =====
+\begin{tabular}{p{0.15\textwidth}|p{0.47\textwidth}|p{0.28\textwidth}}
+\toprule
+\textbf{Variant} & \textbf{Calibration rule for variable $v$} & \textbf{Frozen specification} \\
+\midrule
+\textbf{NaiveAnchor}
+& Prescribe the persistence candidate.
+& $\theta_v=(\mathrm{Last},1)$ \\
+\cmidrule(lr){1-3}
 
-\subsection{Standalone anchors}
+\textbf{ExpoAnchor}
+& Prescribe an EMA candidate with horizon-aware smoothing,
+$\alpha=\mathrm{clip}\{\mathrm{round}(10\sqrt{K/L})/10,0.1,0.9\}$.
+& $\theta_v=(\mathrm{EMA}_{\alpha},1)$ \\
+\cmidrule(lr){1-3}
 
-\begin{itemize}
-    \item \textbf{NaiveAnchor}: repeat the last observed value; tests pure
-    persistence.
-    \item \textbf{ExpoAnchor}: exponentially smooth recent observations; tests
-    local stability under noise.
-    \item \textbf{SparseAnchor}: use sparse-history and repeated-value priors;
-    tests whether irregular missingness creates mode-like histories.
-\end{itemize}
+\textbf{SparseAnchor}
+& Apply a sparse-history diagnostic $s_v=(p_v,u_v)$, where $p_v$ is the
+dominant-value frequency and $u_v$ is the rounded-value cardinality; choose a
+mode--phase candidate when the diagnostic activates.
+& $\theta_v=(a_v^{\mathrm{sp}},1)$ \\
+\cmidrule(lr){1-3}
 
-\subsection{Selection anchors}
+\textbf{ERMAnchor}
+& Select by non-test empirical risk:
+$\displaystyle
+(a_v,\beta_v)=
+\arg\min_{a\in\mathcal A,\,\beta\in B_a}
+\widehat R_v(a,\beta)$.
+& $\theta_v=(a_v^{\mathrm{ERM}},\beta_v)$ \\
+\cmidrule(lr){1-3}
 
-\begin{itemize}
-    \item \textbf{ERMAnchor}: select the candidate anchor that minimizes
-    train+validation scaled MSE.
-    \item \textbf{\method{}}: start from ERMAnchor, then apply generic
-    history-structure priors such as density, repetition, phase-like recurrence,
-    and local stability.
-    \item Explain that \method{} is unified: no dataset-name or variable-name
-    parameter table is used.
-\end{itemize}
+\textbf{AutoAnchor}
+& Use an ordered structural prior $\pi_v(\mathcal H)$ when it fires; otherwise
+retain the ERM solution:
+$\displaystyle
+\theta_v=
+\begin{cases}
+(\pi_v(\mathcal H),1),&\pi_v\neq\varnothing,\\
+\theta_v^{\mathrm{ERM}},&\text{otherwise.}
+\end{cases}$
+& $\theta_v=(a_v^{\mathrm{prior}},1)$ or
+$\theta_v^{\mathrm{ERM}}$ \\
+\bottomrule
+\end{tabular}
 
-\subsection{Computational complexity}
+\vspace{0.55em}
 
-\begin{itemize}
-    \item No backpropagation, no neural parameter training, and no GPU
-    requirement.
-    \item Runtime is dominated by candidate scoring on train+validation and
-    direct anchor generation on test samples.
-    \item Report wall-clock time and memory footprint against APN and other
-    neural baselines.
-\end{itemize}
+% ===== Shared test-time operator =====
+\fbox{%
+\begin{minipage}{0.961\textwidth}
+\centering
+\textbf{Shared test-time operator}\qquad
+$\displaystyle
+\hat y_{b,k,v}
+=
+P_{b,v}\!\left(
+\beta_v f_{a_v}(\mathcal H_{b,v},t^*_{b,k,v})
+\right),
+$
+\quad where $P_{b,v}$ denotes the Anchor output projection after inverse scaling.
+\end{minipage}%
+}
 
-\section{Experiments}
+\end{minipage}%
+}
+% ===== End outer border =====
 
-\subsection{Datasets}
+\caption{\textbf{Anchor Family architecture.}
+All variants share the same deterministic candidate class $\mathcal A$ and
+differ only in how the per-variable specification
+$\theta_v=(a_v,\beta_v)$ is calibrated. The frozen specification is then
+applied through a common test-time forecast operator.}
+\label{fig:anchor-family-architecture}
+\end{figure*}
 
-\begin{itemize}
-    \item PhysioNet P12: clinical ICU measurements with many variables and
-    sparse observation patterns.
-    \item USHCN: climate observations with lower variable count and strong
-    temporal persistence.
-    \item HumanActivity: activity trajectories with long histories and dense
-    short-horizon structure.
-    \item MIMIC: credentialed clinical benchmark to be added once local access
-    and preprocessing are finalized.
-\end{itemize}
+The Anchor family is a diagnostic ladder of deterministic forecasting controls.
+All variants operate on the same candidate class $\mathcal A$ in
+Figure~\ref{fig:anchor-family-architecture}. Each candidate combines a small
+number of primitive history rules, such as last-value persistence, recent-level
+summaries, trimmed means, mode, exponential smoothing, bounded local trend, and
+phase-nearest lookup. A candidate forecast shows:
+\begin{equation}
+ f_a(\mathcal H,t^*)=\sum_{\ell=1}^{J_a}w_{a,\ell}
+ g_{a,\ell}(\mathcal H,t^*),\qquad
+ w_{a,\ell}\geq0,\quad \sum_{\ell}w_{a,\ell}=1.
+ \label{eq:anchor-candidate}
+\end{equation}
+The library is fixed before evaluation and shared across datasets and
+variables. It is not intended to be an optimal hand-engineered forecaster; it is
+intended to span common non-neural explanations for benchmark success. For each variable $v$, the adaptive variants select a candidate $a$ and an
+optional scalar coefficient $\beta$ using only train and validation targets:
+\begin{equation}
+ \widehat R_v(a,\beta)=
+ \frac{\sum_{b,k}m_{b,k,v}
+ \left(\widetilde y_{b,k,v}-\widetilde f_{a,\beta}
+ (\mathcal aH_{b,v},t^*_{b,k,v})\right)^2}
+ {\sum_{b,k}m_{b,k,v}},\qquad b\in\mathcal D_{\mathrm{cal}}.
+ \label{eq:anchor-risk}
+\end{equation}
+Accordingly, $m$ is the target mask and tildes denote benchmark-scaled quantities after
+the same deterministic Anchor output operator used at test time. The resulting specification
+$\theta_v=(a_v,\beta_v)$ is frozen before test evaluation. There is no
+sample-wise test-time search over the library. The five variants differ only in how $\theta_v$ is chosen. NaiveAnchor fixes the
+last-value rule, measuring pure persistence. ExpoAnchor fixes an EMA rule whose
+smoothing depends on the ratio between forecast horizon and lookback length.
+SparseAnchor uses a simple repeated-value diagnostic to choose between mode,
+mode--phase, and last-value rules. ERMAnchor chooses the candidate and scale
+coefficient with the lowest non-test risk in Equation~\ref{eq:anchor-risk}.
+AutoAnchor starts from ERMAnchor, then applies an ordered structural prior when
+calibration histories show strong repetition, long-window short-horizon
+smoothing, or phase-like recurrence:
+\begin{equation}
+ \theta_v^{\mathrm{auto}}=
+ \begin{cases}
+ (a_v^{\mathrm P},1),&\text{if a structural diagnostic activates},\\
+ \theta_v^{\mathrm{ERM}},&\text{otherwise}.
+ \end{cases}
+ \label{eq:auto-summary}
+\end{equation}
+The prior is dataset-agnostic and does not read variable names. Its thresholds
+are disclosed exploratory choices rather than universal constants, so we
+interpret AutoAnchor together with the full anchor ladder and ablations.
+Candidate rules are fixed in the released
+implementation.
 
-\subsection{Main benchmark results}
+
+\section{Benchmark Audit Protocol}
+
+\paragraph{Task and notation.}
+For each sample $b$, the observed history is an irregular set of timestamped
+measurements. For a variable $v$, we write
+\begin{equation}
+    \mathcal H_{b,v}=\{(t_{b,v,j},x_{b,v,j})\}_{j=1}^{n_{b,v}},
+    \qquad t_{b,v,1}<\cdots<t_{b,v,n_{b,v}}.
+\end{equation}
+The goal is to predict observed future targets $y_{b,k,v}$ at query times
+$t^*_{b,k,v}$. Since future targets are partially observed, all
+metrics use the target mask $m_{b,k,v}\in\{0,1\}$ supplied by the benchmark.
+
+\paragraph{Datasets.}
+We audit four widely used IMTS forecasting benchmarks. PhysioNet Challenge 2012
+(P12) contains ICU time-varying variables~\citep{Silva2012PhysioNet2}; MIMIC
+contains de-identified critical-care trajectories~\citep{Johnson2016MIMIC};
+HumanActivity contains wearable-sensor trajectories for human motion
+classification/forecasting settings~\citep{apn}; and USHCN
+contains irregular climate observations from United States weather
+stations~\citep{Menne2016USHCN}. These datasets differ substantially in
+sampling density, target availability, variable volatility, and temporal scale,
+which makes them useful for diagnosing when anchoring is sufficient and when it
+is not.
+
+\paragraph{Baseline Models.}
+We compare against representative IMTS models spanning missingness-aware
+recurrence, set encoders, attention, latent dynamics, graph modeling, and
+adaptive patching: PrimeNet~\citep{primenet}, NeuralFlows~\citep{neuralflows2},
+CRU~\citep{cru}, mTAN~\citep{mtan}, SeFT~\citep{seft}, GNeuralFlow~\citep{gneuralflow},
+GRU-D~\citep{grud}, Raindrop~\citep{raindrop2}, Warpformer~\citep{warpformer},
+tPatchGNN~\citep{tPatchGNN}, GraFITi~\citep{grafiti}, and APN~\citep{apn}. We
+follow \citet{apn}'s benchmark protocol as standards for splits, sequence lengths,
+prediction lengths, masks, scaling, and global metric definitions. To ensure a fair comparison, all neural
+baselines use the released hyperparameter
+settings in original papers while
+holding the dataset splits, preprocessing, prediction horizons, and evaluation
+protocol fixed across methods; no test-label tuning or sample-wise test routing is used.
+Results are reported over multiple seeds (2024-2026). We also avoid evaluation shortcuts such as the ``Drop Last'' trick
+discussed in recent forecasting benchmark audits~\citep{TFB2024,TimeRecipe2026}.
+Anchor methods are deterministic diagnostic controls and therefore do not require
+stochastic training, optimizers, epochs, or learned neural parameters.
+
+\paragraph{Evaluation Metrics.}
+Let $s_v(\cdot)$ be the training-split scaling transform for variable $v$. We
+evaluate predictions in scaled space:
+\begin{equation}
+    \widetilde y_{b,k,v}=s_v(y_{b,k,v}),\qquad
+    \widetilde{\hat y}_{b,k,v}=s_v(\hat y_{b,k,v}).
+\end{equation}
+The global masked metrics are
+\begin{equation}
+    \mathrm{MAE}=\frac{\sum_{b,k,v}m_{b,k,v}
+    |\widetilde{\hat y}_{b,k,v}-\widetilde y_{b,k,v}|}
+    {\sum_{b,k,v}m_{b,k,v}},
+    \qquad
+    \mathrm{MSE}=\frac{\sum_{b,k,v}m_{b,k,v}
+    (\widetilde{\hat y}_{b,k,v}-\widetilde y_{b,k,v})^2}
+    {\sum_{b,k,v}m_{b,k,v}}.
+\end{equation}
+We use global masked metrics because they are the benchmark convention, but we
+also report paired entity-level tests and bootstrap intervals to avoid relying
+only on aggregate leaderboard differences.
+
+\paragraph{Audit design.}
+The audit asks whether neural gains survive strong non-neural controls under the
+same protocol. Table~\ref{tab:main-results} establishes the headline
+benchmark comparison at each dataset's standard window, asking whether learned
+architectures retain an aggregate advantage once strong deterministic controls
+are included. Figure~\ref{fig:cross-baseline-lookback} then varies lookback and
+prediction horizon to test whether the conclusion is tied to a single favorable
+window. Table~\ref{tab:paired-neural-tests} replaces leaderboard averages with
+paired entity-level sign-flip tests, measuring whether observed differences are
+consistent across patients, stations, or activity windows rather than driven by
+a few samples. Table~\ref{tab:cross-model-temporal}
+and Figure~\ref{fig:cross-model-sparsity} intervene on timestamp order and available
+history to identify whether performance depends on irregular temporal geometry
+or mostly on recent observed values. Finally, Table~\ref{tab:bootstrap-ci}
+quantifies uncertainty for Anchor-family metrics, while
+Table~\ref{tab:candidate-removal} attributes performance to specific candidate
+classes.
+
+% \newpage
+\section{Main Results}
+
+% The experiments answer three questions. First, can simple history-derived
+% controls match neural IMTS models at the standard benchmark settings? Second,
+% does that conclusion survive changes in lookback/horizon and paired entity-level
+% significance tests? Third, which observed-history properties does performance depend on, and
+% where do Anchor controls stop being sufficient?
 
 \begin{table*}[t]
-\caption{Current APN benchmark comparison. Lower is better. Bold marks the best
-value in each metric column and underline marks the second best. APN and neural
-baseline values are taken from the APN benchmark table; Anchor-family values are
-single-run APN-style global masked metrics from \texttt{anchor\_results\_family/anchor\_summary.csv}.}
+\caption{Comparison at the standard benchmark window of each dataset. All
+methods use a common data and evaluation protocol. Neural methods report mean
+$\pm$ standard deviation over three runs (seed 2024-2026); Anchor methods are deterministic.
+Lower is better. \textbf{Bold} marks the best value in each metric column and
+\underline{underlining} marks the second best.}
 \label{tab:main-results}
 \centering
 \scriptsize
 \resizebox{\textwidth}{!}{
-\begin{tabular}{lcccccccc}
+\begin{tabular}{l|c|c|c|c|c|c|c|c}
 \toprule
 Method
-& \multicolumn{2}{c}{HumanActivity}
-& \multicolumn{2}{c}{USHCN}
-& \multicolumn{2}{c}{PhysioNet}
+& \multicolumn{2}{|c|}{HumanActivity}
+& \multicolumn{2}{c|}{USHCN}
+& \multicolumn{2}{c|}{P12}
 & \multicolumn{2}{c}{MIMIC} \\
 \cmidrule(lr){2-3}
 \cmidrule(lr){4-5}
@@ -244,196 +423,655 @@ SeFT & 1.3786$\pm$0.0024 & 0.9762$\pm$0.0007 & 0.3345$\pm$0.0022 & 0.4083$\pm$0.
 GNeuralFlow & 0.3936$\pm$0.1585 & 0.4541$\pm$0.0841 & 0.2205$\pm$0.0421 & 0.3286$\pm$0.0412 & 0.8207$\pm$0.0310 & 0.6759$\pm$0.0100 & 0.8957$\pm$0.0209 & 0.6450$\pm$0.0072 \\
 GRU-D & 0.1893$\pm$0.0627 & 0.3253$\pm$0.0485 & 0.2097$\pm$0.0493 & 0.3045$\pm$0.0305 & 0.3419$\pm$0.0029 & 0.3992$\pm$0.0011 & 0.4759$\pm$0.0100 & 0.4526$\pm$0.0055 \\
 Raindrop & 0.0916$\pm$0.0072 & 0.2114$\pm$0.0072 & 0.2035$\pm$0.0336 & 0.3029$\pm$0.0264 & 0.3478$\pm$0.0019 & 0.4044$\pm$0.0020 & 0.6754$\pm$0.1829 & 0.5444$\pm$0.0868 \\
-Warpformer & 0.0449$\pm$0.0010 & 0.1228$\pm$0.0018 & 0.1888$\pm$0.0598 & 0.2939$\pm$0.0591 & \second{0.3056$\pm$0.0011} & 0.3661$\pm$0.0016 & \second{0.4302$\pm$0.0035} & \second{0.4025$\pm$0.0014} \\
+Warpformer & 0.0449$\pm$0.0010 & 0.1228$\pm$0.0018 & 0.1888$\pm$0.0598 & 0.2939$\pm$0.0591 & \second{0.3056$\pm$0.0011} & 0.3661$\pm$0.0016 & 0.4302$\pm$0.0035 & 0.4025$\pm$0.0014 \\
 tPatchGNN & 0.0443$\pm$0.0009 & 0.1247$\pm$0.0031 & 0.1885$\pm$0.0403 & 0.3084$\pm$0.0479 & 0.3133$\pm$0.0053 & 0.3697$\pm$0.0049 & 0.4431$\pm$0.0115 & 0.4077$\pm$0.0088 \\
 GraFITi & 0.0437$\pm$0.0005 & 0.1221$\pm$0.0017 & 0.1691$\pm$0.0093 & 0.2777$\pm$0.0248 & 0.3075$\pm$0.0015 & \second{0.3637$\pm$0.0036} & 0.4359$\pm$0.0455 & 0.4142$\pm$0.0297 \\
-APN & \second{0.0421$\pm$0.0001} & 0.1159$\pm$0.0006 & \second{0.1590$\pm$0.0137} & \second{0.2611$\pm$0.0167} & 0.3093$\pm$0.0011 & 0.3650$\pm$0.0026 & \best{0.4292$\pm$0.0027} & \best{0.4016$\pm$0.0016} \\
+APN & \second{0.0421$\pm$0.0001} & 0.1159$\pm$0.0006 & \second{0.1590$\pm$0.0137} & \second{0.2611$\pm$0.0167} & 0.3093$\pm$0.0011 & 0.3650$\pm$0.0026 & 0.4292$\pm$0.0027 & 0.4016$\pm$0.0016 \\
 \midrule
-NaiveAnchor & 0.0605 & 0.1225 & 0.3640 & 0.3291 & 0.4154 & 0.3981 & -- & -- \\
-ExpoAnchor & \best{0.0420} & \second{0.1148} & 0.5923 & 0.5117 & 0.3204 & 0.3716 & -- & -- \\
-SparseAnchor & 0.0605 & 0.1225 & 0.2661 & 0.2812 & 0.4154 & 0.3981 & -- & -- \\
-ERMAnchor & 0.0428 & \best{0.1131} & 0.1662 & 0.2635 & \best{0.2962} & \best{0.3556} & -- & -- \\
-\method{} & \best{0.0420} & \second{0.1148} & \best{0.1565} & \best{0.2187} & \best{0.2962} & \best{0.3556} & -- & -- \\
+NaiveAnchor & 0.0605 & 0.1225 & 0.3640 & 0.3291 & 0.3992 & 0.3951 & 0.4561 & 0.3708 \\
+ExpoAnchor & \best{0.0420} & \second{0.1148} & 0.5923 & 0.5117 & 0.3286 & 0.3753 & 0.6431 & 0.4974 \\
+SparseAnchor & 0.0605 & 0.1225 & 0.2661 & 0.2812 & 0.3992 & 0.3951 & 0.4560 & 0.3709 \\
+ERMAnchor & 0.0428 & \best{0.1131} & 0.1662 & 0.2635 & \best{0.3020} & \best{0.3585} & \best{0.3782} & \second{0.3658} \\
+\method{} & \best{0.0420} & \second{0.1148} & \best{0.1565} & \best{0.2187} & \best{0.3020} & \best{0.3585} & \second{0.3785} & \best{0.3657} \\
 \bottomrule
 \end{tabular}
 }
 \end{table*}
 
-\subsection{Anchor-family ladder}
 
-\begin{itemize}
-    \item Report NaiveAnchor, ExpoAnchor, SparseAnchor, ERMAnchor, and
-    \method{} together.
-    \item Use the ladder to show that the headline result is not a black-box
-    trick: each added mechanism has a measurable role.
-    \item Highlight current pattern: persistence alone is strong on some
-    variables, ERM improves PhysioNet, and \method{} is strongest on USHCN.
-\end{itemize}
+\begin{figure*}[t]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/P12_lookback_horizon.png}
+  \centerline{\footnotesize (a) P12}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/MIMIC_lookback_horizon.png}
+  \centerline{\footnotesize (b) MIMIC}
+\end{minipage}
+\vspace{0.6em}
 
-\subsection{Efficiency comparison}
+\begin{minipage}[t]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/HumanActivity_lookback_horizon.png}
+  \centerline{\footnotesize (c) HumanActivity}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/USHCN_lookback_horizon.png}
+  \centerline{\footnotesize (d) USHCN}
+\end{minipage}
+\caption{Lookback--horizon sweep for \method{} and the Top 3 neural models.  The plots show whether the Anchor conclusion persists across configurations and where others regain an advantage.}
+\label{fig:cross-baseline-lookback}
+\end{figure*}
 
-\begin{table}[t]
-\caption{Efficiency comparison on USHCN. Neural-model GPU memory, parameter
-count, training-step time, and inference-step time are from the APN efficiency
-comparison. Anchor-family rows are CPU-only timings from our completed
-\texttt{anchor\_results\_family} run; they are reported as total
-calibration-plus-forecasting wall time and milliseconds per evaluated target
-prediction, not neural batch-step inference time.}
-\label{tab:efficiency}
+\begin{table*}[t]
+\caption{Paired entity-level tests comparing \method{} with neural baselines at the standard benchmark windows. Entries are paired entity-level averages used for the test, rather than the global aggregates in Table~\ref{tab:main-results}. All paired comparisons use the common valid target-coordinate set after aligning the rerun exports. Deltas are \method{} minus neural error, so negative values favor \method{}. Reported $p$-values are unadjusted paired entity-level sign-flip tests; the text summarizes Holm-corrected counts within each metric family.}
+\label{tab:paired-neural-tests}
 \centering
 \scriptsize
-\begin{tabular}{lcccccc}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c|c|c|c|c}
 \toprule
-Method
-& GPU Mem. (GB)
-& Params (M)
-& Train Step (ms)
-& Infer. Step (ms)
-& CPU Total (s)
-& CPU ms / Pred. \\
+Dataset & Model & Auto MAE & Neural MAE & $\Delta$ MAE & $p$ & Auto MSE & Neural MSE & $\Delta$ MSE & $p$ \\
 \midrule
-CRU & 0.89 & 31.25 & 1771.00 & 677.00 & -- & -- \\
-GraFITi & 0.78 & 989.44 & 34.92 & 21.51 & -- & -- \\
-tPatchGNN & 1.09 & 410.71 & 11.35 & 4.22 & -- & -- \\
-APN & 0.19 & 1.97 & 3.89 & 1.46 & -- & -- \\
+\multirow{3}{*}{P12} & APN & 0.3585 & 0.3649 &\best{ -0.0063 }& $<10^{-4}$ & 0.3020 & 0.3032 &\best{ -0.0012 }& 0.4953 \\
+& GraFITi & 0.3585 &\best{ 0.3581 }& +0.0004 & 0.6687 & 0.3020 &\best{ 0.2953 }& +0.0067 & 0.0002 \\
+& tPatchGNN & 0.3585 &\second{ 0.3628 }&\second{ -0.0043 }& $<10^{-4}$ & 0.3020 &\second{ 0.3006 }& +0.0014 & 0.9509 \\
 \midrule
-NaiveAnchor & 0.00 & 0.00 & N/A & N/A & 0.0681 & 0.1850 \\
-ExpoAnchor & 0.00 & 0.00 & N/A & N/A & 0.0700 & 0.1903 \\
-SparseAnchor & 0.00 & 0.00 & N/A & N/A & 0.0725 & 0.1969 \\
-ERMAnchor & 0.00 & 0.00 & N/A & N/A & 0.0797 & 0.2166 \\
-\method{} & 0.00 & 0.00 & N/A & N/A & 0.0806 & 0.2190 \\
+\multirow{3}{*}{MIMIC} & APN & 0.3657 &\second{ 0.3737 }&\second{ -0.0080 }& $<10^{-4}$ & 0.3785 &\best{ 0.3931 }&\second{ -0.0147 }& 0.2684 \\
+& GraFITi & 0.3657 & 0.4150 &\best{ -0.0493 }& $<10^{-4}$ & 0.3785 & 0.4365 &\best{ -0.0580 }& $<10^{-4}$ \\
+& tPatchGNN & 0.3657 &\best{ 0.3676 }& -0.0019 & 0.0020 & 0.3785 &\second{ 0.3948 }&\second{ -0.0163 }& 0.1895 \\
+\midrule
+\multirow{3}{*}{USHCN} & APN & 0.2187 & 0.2844 &\best{ -0.0657 }& $<10^{-4}$ & 0.1565 &\second{ 0.1611 }&\second{ -0.0046 }& 0.8642 \\
+& GraFITi & 0.2187 &\second{ 0.2730 }&\second{ -0.0543 }& $<10^{-4}$ & 0.1565 & 0.1669 &\best{ -0.0104 }& 0.6827 \\
+& tPatchGNN & 0.2187 &\best{ 0.2668 }& -0.0481 & 0.0011 & 0.1565 &\best{ 0.1596 }& -0.0031 & 0.9600 \\
+\midrule
+\multirow{3}{*}{HumanActivity} & APN & 0.1148 &\best{ 0.1156 }& -0.0009 & 0.1383 & 0.0420 &\best{ 0.0421 }& -0.0001 & 0.8420 \\
+& GraFITi & 0.1148 &\second{ 0.1226 }&\second{ -0.0078 }& $<10^{-4}$ & 0.0420 &\second{ 0.0439 }&\second{ -0.0019 }& 0.0085 \\
+& tPatchGNN & 0.1148 & 0.1323 &\best{ -0.0175 }& $<10^{-4}$ & 0.0420 & 0.0470 &\best{ -0.0051 }& $<10^{-4}$ \\
 \bottomrule
-\end{tabular}
-\end{table}
+\end{tabular}}
+\end{table*}
 
-\begin{itemize}
-    \item Anchor methods have no neural parameters, no gradient-training step,
-    and no GPU requirement.
-    \item The CPU timing includes both non-test anchor selection and test
-    forecasting for USHCN.
-    \item The timing columns should be interpreted by execution mode: neural
-    models report GPU batch-step times; Anchor methods report CPU
-    per-prediction forecasting cost.
-\end{itemize}
+\begin{table*}[t]
+\caption{Cross-model temporal perturbations at the standard benchmark windows. Original MSE is the unperturbed error; each $\Delta$ is the mean MSE change under the perturbation. Positive values denote degradation and measure sensitivity, not ranking quality.}
+\label{tab:cross-model-temporal}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c|c}
+\toprule
+Dataset & Model & Orig. MSE & Shuffle $\Delta$ & Swap $\Delta$ & Last-only $\Delta$ & Gaps-only $\Delta$ \\
+\midrule
+\multirow{4}{*}{P12} & \method{} &\best{ 0.3020 }& +0.0007 & +0.2240 & +0.0575 & +0.4997 \\
+& APN & 0.3093$\pm$0.0011 & +0.1467 & +0.2023 & +0.0558 & +0.4873 \\
+& GraFITi &\second{ 0.3075$\pm$0.0015 }& +0.1471 & +0.1900 & +0.0464 & +0.4906 \\
+& tPatchGNN & 0.3133$\pm$0.0053 & +0.4549 & +0.1826 & +0.0416 & +0.4827 \\
+\midrule
+\multirow{4}{*}{MIMIC} & \method{} &\best{ 0.3785 }& +0.0102 & +0.3756 & +0.0076 & +0.6575 \\
+& APN &\second{ 0.4292$\pm$0.0027 }& +0.1843 & +0.2344 & +0.0454 & +0.5408 \\
+& GraFITi & 0.4359$\pm$0.0455 & +0.1802 & +0.2359 & +0.0679 & +0.5348 \\
+& tPatchGNN & 0.4431$\pm$0.0115 & +0.1809 & +0.2372 & +0.0444 & +0.5170 \\
+\midrule
+\multirow{4}{*}{USHCN} & \method{} &\best{ 0.1565 }& +0.3125 & +0.6718 & +0.2075 & +0.3362 \\
+& APN &\second{ 0.1590$\pm$0.0137 }& +0.0023 & +0.0045 & +0.1401 & +0.0804 \\
+& GraFITi & 0.1691$\pm$0.0093 & -0.0015 & -0.0019 & +0.0473 & +0.1010 \\
+& tPatchGNN & 0.1885$\pm$0.0403 & -0.0195 & +0.3605 & +0.0595 & +0.1267 \\
+\midrule
+\multirow{4}{*}{HumanActivity} & \method{} &\best{ 0.0420 }& +0.0000 & +0.0611 & +0.0185 & +4.2071 \\
+& APN &\second{ 0.0421$\pm$0.0001 }& +0.0349 & +0.0581 & +0.0166 & +4.0887 \\
+& GraFITi & 0.0437$\pm$0.0005 & +0.0347 & +0.0488 & +0.1217 & +3.5537 \\
+& tPatchGNN & 0.0443$\pm$0.0009 & +0.3731 & +0.0554 & +0.2989 & +3.7591 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
 
-\section{Analysis}
 
-\subsection{Why do anchors work?}
+\begin{figure*}[t]
+\centering
 
-\begin{itemize}
-    \item Quantify persistence: how close are future targets to last observed
-    values, recent means, or EMA anchors?
-    \item Stratify by observation density and gap length.
-    \item Show that many benchmark targets are locally stable enough that
-    history anchoring explains much of the performance.
-\end{itemize}
+\makebox[\textwidth][c]{%
+\begin{minipage}[t]{0.35\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/HumanActivity_history_thinning.png}
+  \centerline{\footnotesize (a) HumanActivity}
+\end{minipage}
+\hspace{0.04\textwidth}
+\begin{minipage}[t]{0.35\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/MIMIC_history_thinning.png}
+  \centerline{\footnotesize (b) MIMIC}
+\end{minipage}
+}
 
-\subsection{Where do anchors fail?}
+\vspace{0.6em}
 
-\begin{itemize}
-    \item Identify high-error tails and sudden regime shifts.
-    \item Analyze PhysioNet variables where clinical changes break persistence.
-    \item Use this section to state what neural models should be tested on if
-    they claim dynamic representation learning.
-\end{itemize}
+\makebox[\textwidth][c]{%
+\begin{minipage}[t]{0.35\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/P12_history_thinning.png}
+  \centerline{\footnotesize (c) P12}
+\end{minipage}
+\hspace{0.04\textwidth}
+\begin{minipage}[t]{0.35\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/USHCN_history_thinning.png}
+  \centerline{\footnotesize (d) USHCN}
+\end{minipage}
+}
 
-\subsection{Per-variable and per-dataset diagnostics}
+\caption{Cross-model history-thinning tests at the standard benchmark windows. Each panel reports global scaled MSE after retaining a seeded random fraction of observed history entries at evaluation time while preserving remaining timestamps and values.}
+\label{fig:cross-model-sparsity}
+\end{figure*}
 
-\begin{itemize}
-    \item PhysioNet: heatmap of per-variable MAE/MSE and selected anchor rule.
-    \item USHCN: analyze sparse/repeated climate histories and seasonal
-    structure.
-    \item HumanActivity: analyze dense short-horizon trajectories.
-\end{itemize}
 
-\section{Ablations}
+\begin{table*}[t]
+\caption{Entity-bootstrap 95\% confidence intervals over patients, stations, or
+activity windows for all Anchor-family global metrics. MSE red. is the relative
+MSE reduction against NaiveAnchor within each dataset; negative values indicate
+higher MSE than NaiveAnchor.}
+\label{tab:bootstrap-ci}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c}
+\toprule
+Dataset & Method & MAE (95\% CI) & MSE (95\% CI) & MSE red. (\%) \\
+\midrule
+\multirow{5}{*}{P12} & NaiveAnchor & 0.3951 [0.3834, 0.4076] & 0.3992 [0.3741, 0.4273] & 0.0\% \\
+& ExpoAnchor & 0.3753 [0.3653, 0.3856] & 0.3286 [0.3078, 0.3521] & 17.7\% \\
+& SparseAnchor & 0.3951 [0.3834, 0.4076] & 0.3992 [0.3741, 0.4273] & 0.0\% \\
+& ERMAnchor & 0.3585 [0.3488, 0.3686] & 0.3020 [0.2820, 0.3245] & 24.3\% \\
+& \method{} & 0.3585 [0.3488, 0.3686] & 0.3020 [0.2820, 0.3245] & 24.3\% \\
+\midrule
+\multirow{5}{*}{MIMIC} & NaiveAnchor & 0.3708 [0.3569, 0.3853] & 0.4561 [0.4136, 0.5034] & 0.0\% \\
+& ExpoAnchor & 0.4974 [0.4809, 0.5139] & 0.6431 [0.5850, 0.7080] & -41.0\% \\
+& SparseAnchor & 0.3709 [0.3571, 0.3855] & 0.4560 [0.4137, 0.5033] & 0.0\% \\
+& ERMAnchor & 0.3658 [0.3537, 0.3785] & 0.3782 [0.3396, 0.4242] & 17.1\% \\
+& \method{} & 0.3657 [0.3536, 0.3784] & 0.3785 [0.3397, 0.4242] & 17.0\% \\
+\midrule
+\multirow{5}{*}{USHCN} & NaiveAnchor & 0.3291 [0.2787, 0.3837] & 0.3640 [0.2640, 0.4791] & 0.0\% \\
+& ExpoAnchor & 0.5117 [0.4519, 0.5751] & 0.5923 [0.4955, 0.6994] & -62.8\% \\
+& SparseAnchor & 0.2812 [0.2382, 0.3266] & 0.2661 [0.2029, 0.3367] & 26.9\% \\
+& ERMAnchor & 0.2634 [0.2315, 0.2963] & 0.1662 [0.1289, 0.2074] & 54.3\% \\
+& \method{} & 0.2187 [0.1868, 0.2528] & 0.1565 [0.1209, 0.1958] & 57.0\% \\
+\midrule
+\multirow{5}{*}{HumanActivity} & NaiveAnchor & 0.1225 [0.1116, 0.1341] & 0.0605 [0.0480, 0.0746] & 0.0\% \\
+& ExpoAnchor & 0.1148 [0.1054, 0.1248] & 0.0420 [0.0342, 0.0504] & 30.6\% \\
+& SparseAnchor & 0.1225 [0.1116, 0.1341] & 0.0605 [0.0480, 0.0746] & 0.0\% \\
+& ERMAnchor & 0.1131 [0.1039, 0.1230] & 0.0428 [0.0346, 0.0519] & 29.2\% \\
+& \method{} & 0.1148 [0.1054, 0.1248] & 0.0420 [0.0342, 0.0504] & 30.6\% \\
+\bottomrule
+\end{tabular}}
+\end{table*}
 
-\begin{itemize}
-    \item Remove EMA candidates.
-    \item Remove sparse-history candidates.
-    \item Remove trend and phase-nearest candidates.
-    \item Compare train-only selection, validation-only selection, and
-    train+validation selection.
-    \item Compare MSE-selected anchors with MAE-selected anchors.
-    \item Verify that no test-label tuning or dataset-name-specific parameter
-    choices are used.
-\end{itemize}
+
+\paragraph{Standard-window benchmark audit.}
+Table~\ref{tab:main-results} shows that the Anchor family is more than a sanity-check baseline at standard benchmark windows. An Anchor variant achieves the best or tied-best result in all eight dataset--metric cells, with \method{} doing so in six. The effect sizes, however, vary substantially. Relative to the strongest neural baseline, gains are modest on HumanActivity MSE (0.24\%) and P12 MSE/MAE (1.2--1.4\%), but larger on USHCN MAE (16.2\%) and MIMIC MSE/MAE (11.9\% and 8.9\%). The key result is therefore not that every improvement is equally large, but that competitive benchmark error can often be matched without learned representations. The Anchor ladder further shows that no single heuristic explains all datasets: HumanActivity is largely captured by horizon-aware smoothing, P12 and MIMIC by empirical selection over history-derived rules, and USHCN by sparse or phase structure. Different benchmarks thus reward different low-complexity structures already present in the observed history.
+
+
+\paragraph{Lookback and horizon robustness.}
+Figure~\ref{fig:cross-baseline-lookback} tests whether the standard-window
+finding is tied to a favorable configuration. Across the 19 tested windows,
+\method{} obtains the lowest MSE in 13 and the lowest MAE in 16, including all
+six MIMIC configurations and four of five P12 configurations for both metrics.
+The controlled window changes are also informative. On USHCN, moving from
+$(L,H)=(100,3)$ to $(150,3)$ reduces \method{} MSE from 1.1591 to 0.1565,
+consistent with longer historical context being important for the
+phase-sensitive behavior identified by the candidate analysis.
+At fixed $L=150$, increasing the horizon from $H=3$ to $H=7$ lets neural models
+regain the MSE advantage, while \method{} retains the MAE advantage. These
+exceptions, together with the small APN MSE advantages on some HumanActivity
+windows, identify regimes where learned temporal aggregation can yield measurable
+gains beyond frozen controls.
+
+\paragraph{Paired comparison with neural models.}
+Table~\ref{tab:paired-neural-tests} replaces aggregate leaderboard comparisons
+with paired tests on matched entities. After Holm correction within each metric
+family, \method{} retains significant MAE improvements in 10 of the 12 neural
+comparisons. MSE remains more mixed: three of 12 differences remain significant,
+two favoring \method{} and one favoring GraFITi on P12. This distinction is
+central to the benchmark-audit framing. Paired analysis shows that several small
+differences between neural models and \method{} are not statistically
+distinguishable at the entity level, while a smaller subset exhibits clear
+advantages in either direction.
+
+\paragraph{Temporal perturbations.}
+Table~\ref{tab:cross-model-temporal} should be read as a sensitivity analysis,
+not as a leaderboard: a smaller $\Delta$ means lower sensitivity to the
+perturbed information, not necessarily a better model. Small negative deltas can
+arise from finite-sample variation or perturbation-induced changes in model
+behavior and should not be interpreted as evidence that removing temporal
+information is beneficial. On P12, MIMIC, and HumanActivity, timestamp
+shuffling changes \method{} MSE by only about 0.001,
+0.010, and 0.000, respectively, even though several neural models deteriorate
+substantially under the same intervention. This supports a benchmark-level
+conclusion: exact timestamp geometry may be used by neural models, but it is not
+necessary for competitive aggregate performance on these three settings. USHCN
+is the counterexample. For \method{}, timestamp shuffling increases MSE by
+0.313 and swapping history halves increases it by 0.672, showing that
+\method{}'s strong USHCN performance depends substantially on temporal
+arrangement.
+
+\paragraph{History thinning.}
+Figure~\ref{fig:cross-model-sparsity} reports a seeded random thinning study that retains a fixed fraction of
+observed history entries while preserving the timestamps and values that remain.
+For this study, thinning is applied only at evaluation time: neural checkpoints
+are trained on original histories, and Anchor specifications are calibrated on
+original histories before the thinned test histories are applied.
+The dataset-level patterns differ sharply. On P12, \method{} remains best at
+10\% history, but only narrowly ahead of GraFITi (0.5224 versus 0.5279). On
+MIMIC, the advantage is much clearer at the same retention level (0.7253 versus
+0.8375 for the best neural comparator). USHCN reverses under aggressive
+thinning, with neural models substantially ahead at 10\% history, and
+HumanActivity shifts from an AutoAnchor advantage at 10\% to small APN
+advantages at intermediate fractions. These reversals are scientifically
+informative: they identify settings where neural models exhibit greater
+test-time robustness than frozen history-based controls under severe history
+loss. Additionally, the relative MSE reductions, ranging from 17\% to 57\%, over NaiveAnchor show that the Anchor family provides substantial gains beyond pure persistence, indicating that its performance comes from structured history-based selection rather than last-value copying alone.
+
+\paragraph{Uncertainty and candidate attribution.}
+Table~\ref{tab:bootstrap-ci} reports entity-bootstrap intervals for the full
+Anchor ladder. The aggregate estimates are stable under resampling: \method{}
+and NaiveAnchor have clearly separated MSE intervals on P12 and USHCN, while
+HumanActivity shows a large MSE reduction with slight interval overlap. The full
+ladder is also informative because some fixed rules are neutral or harmful, such
+as ExpoAnchor on MIMIC and USHCN, whereas ERMAnchor and \method{} recover strong
+reductions over persistence. These intervals summarize sampling uncertainty
+rather than formal paired significance. Table~\ref{tab:candidate-removal} then
+attributes performance to candidate classes. P12 and MIMIC are largely matched
+by ERM selection from the shared library; USHCN benefits strongly from
+structural sparse/phase components; and HumanActivity is mostly matched by the
+horizon-aware EMA rule. The key benchmark-audit conclusion is that different
+datasets reward different low-complexity structures, yet all four standard
+benchmark settings are substantially matched by transparent history-derived
+controls.
+
+\paragraph{Failure modes.}
+The real-data reversals already define the boundary of the claim. Neural models
+regain advantages on USHCN when the lookback is too short or the horizon is
+extended, and on HumanActivity under several window and thinning regimes. These
+failures are expected for a variable-wise Anchor family: it does not explicitly
+learn latent state, cross-variable dependencies, or anticipatory regime
+dynamics. The paper therefore does not argue that neural IMTS modeling is
+unnecessary; it argues that its advantages
+should be demonstrated on settings where this additional representational
+capacity is required and measurable.
+
+% \paragraph{Synthesis.}
+% Together, the experiments show a coherent pattern. Standard IMTS benchmark
+% performance can often be matched by low-complexity history controls; this
+% finding persists across many windows and paired entity-level comparisons; and
+% perturbations reveal that different datasets reward different forms of
+% persistence, smoothing, sparsity, and recurrence. At the same time, the same
+% audit exposes where anchors fail and neural models regain an advantage. Thus,
+% the benchmark question is not simply whether a neural architecture achieves
+% lower error, but whether its gain remains after controlling for low-complexity
+% historical structure.
 
 \section{Discussion}
 
-\subsection{Are neural models necessary?}
+\paragraph{What the audit establishes.}
+Our results show that strong IMTS benchmark performance does not necessarily imply that complex irregular-time representations are required. Across the standard settings, transparent history-derived controls match or exceed specialized neural models, and paired tests show that many remaining differences are small or statistically indistinguishable. The key implication is therefore diagnostic: benchmark accuracy should not be treated as evidence of representational necessity unless gains remain after controlling for low-complexity historical structure.
 
-\begin{itemize}
-    \item Give the careful answer: not always under current IMTS benchmark
-    protocols.
-    \item Explain that neural models may still be necessary for long-horizon
-    distribution shift, cross-variable causal dynamics, and true regime changes.
-    \item Reframe \method{} as a diagnostic baseline: a neural model should beat
-    strong anchors before claiming to learn useful irregular dynamics.
-\end{itemize}
+\paragraph{Why the result is not a trivial-baseline artifact.}
+No single heuristic explains all four datasets. HumanActivity is largely captured by horizon-aware smoothing, P12 and MIMIC by empirical selection over simple history-based rules, and USHCN by longer-context sparse/phase structure. This heterogeneity strengthens the audit: different benchmarks reward different forms of low-complexity predictability rather than one universal shortcut. The perturbation results further show that exact timestamp geometry is weakly necessary for competitive performance on several settings, while USHCN provides a clear counterexample where temporal arrangement matters.
 
-\subsection{Implications for benchmarking}
+\paragraph{Scope and limitations.}
+The Anchor family is a diagnostic control, not a replacement for neural forecasting. Its variable-wise rules do not explicitly learn latent state, cross-variable dependencies, or regime dynamics, and the observed reversals at shorter lookbacks, longer horizons, and aggressive history thinning show where neural models regain advantages. These failures define the scope of the claim rather than weaken it: neural modeling is not broadly unnecessary, but its necessity is benchmark- and regime-dependent.
 
-\begin{itemize}
-    \item Future IMTS papers should include NaiveAnchor, ExpoAnchor, ERMAnchor,
-    and \method{} as default baselines.
-    \item Benchmarks should report performance by history density, target gap,
-    variable type, and error tail.
-    \item New datasets should stress conditions where local anchoring is
-    insufficient.
-\end{itemize}
+\paragraph{Implications for future IMTS evaluation.}
+Future work should demonstrate improvements beyond strong controls for persistence, smoothing, recurrence, and non-test empirical selection, and should evaluate settings where irregular timing, asynchronous cross-variable effects, delayed dependencies, and distribution shifts are genuinely required for success. IMTS evaluation should distinguish between what an architecture \emph{can} represent and what a benchmark \emph{requires} it to represent. That distinction is necessary for making gains in model complexity scientifically interpretable.
 
-\section{Limitations}
 
-\begin{itemize}
-    \item Current Anchor-family results are single-run on the APN fixed protocol;
-    standard deviations require repeated exposed splits or seeds.
-    \item MIMIC is not yet included in the Anchor-family row because it requires
-    credentialed access and preprocessing.
-    \item Anchor methods are intentionally limited: they do not learn latent
-    representations or cross-variable causal structure.
-    \item Results may reveal benchmark structure rather than universal
-    superiority of non-neural methods.
-\end{itemize}
 
 \section{Conclusion}
 
-\begin{itemize}
-    \item Summarize the main finding: simple history anchors are unexpectedly
-    strong for irregular time-series forecasting.
-    \item State the scientific claim: current IMTS benchmark conclusions are
-    incomplete without strong non-neural anchors.
-    \item Close with the practical value: transparent forecasts, near-zero
-    training cost, and a stronger standard for evaluating future neural models.
-\end{itemize}
+This paper reframes strong non-neural baselines as diagnostic controls for IMTS forecasting. Across four benchmarks, the Anchor family shows that much reported performance can be matched by transparent history-derived rules under matched protocols. This does not imply neural models are unnecessary; the audits also reveal regimes where learned representations regain an advantage. Instead, we propose a stricter evaluation standard: future IMTS methods should demonstrate gains beyond persistence, smoothing, sparse repetition, recurrence, and non-test empirical selection, particularly where irregular temporal or cross-variable reasoning is required. 
 
-\subsubsection*{Author Contributions}
-TODO.
 
-\subsubsection*{Acknowledgments}
-TODO.
 
-\bibliography{references}
+
+\newpage
+
+\section*{AI Use Statement}
+In this work, ChatGPT, a Generative AI application, was used only to improve the clarity, fluency, and grammatical quality of the manuscript, as the authors are non-native English speakers. The authors provided the original words, technical content, arguments, structure, and key contexts, while AI assistance was limited to linking sentences, rephrasing passages, and polishing language. It  was not used to generate the research ideas, methodology, experiments, results, or scientific claims presented in this work. All AI-assisted text was reviewed and revised by the authors, who take full responsibility for the final content of the manuscript.
+
+
+\bibliography{reference}
 \bibliographystyle{iclr2026_conference}
 
+\clearpage
 \appendix
 
-\section{Additional Experimental Details}
 
-\begin{itemize}
-    \item Dataset preprocessing commands.
-    \item Exact APN configuration compatibility.
-    \item Anchor candidate definitions.
-    \item Calibration and selection pseudocode.
-\end{itemize}
+\section{Additional Anchor-family Analyses}
+\label{app:additional-analyses}
 
-\section{Additional Results}
+This technical appendix expands the benchmark audit along three axes. First, it decomposes
+which parts of the Anchor family are responsible for the standard-window
+results. Second, it reports operational properties, including deterministic
+CPU inference cost. Third, it studies whether the Anchor gains over pure
+persistence are concentrated in particular volatility or observation-density
+regimes. These analyses are not intended to introduce a second leaderboard;
+they are included to make the diagnostic interpretation of the main results
+auditable.
 
-\begin{itemize}
-    \item Full per-variable PhysioNet table.
-    \item Per-dataset calibration logs.
-    \item Runtime and memory measurements.
-    \item MIMIC results once available.
-\end{itemize}
+\paragraph{Candidate attribution.}
+Tables~\ref{tab:candidate-removal} and~\ref{tab:anchor-family-ladder} show that
+the standard-window Anchor results are not produced by one universal heuristic.
+For P12, ERM selection over the shared candidate library accounts for the
+improvement over NaiveAnchor: using rules only reverts to the NaiveAnchor
+error, while removing trend has essentially no effect. MIMIC follows a similar
+pattern, with ERMAnchor and \method{} nearly identical and substantially below
+the rules-only condition in MSE. HumanActivity is different: the horizon-aware
+EMA rule already reaches the best MSE, and removing EMA increases MSE from
+0.0420 to 0.0483. USHCN is the clearest case where the structural components
+matter: removing sparse and phase-sensitive candidates increases MSE by 0.0283
+and 0.0616, respectively. Thus, all four standard settings are substantially
+matched by history-derived controls, but the responsible low-complexity
+structure differs by dataset.
 
+\paragraph{Efficiency.}
+Table~\ref{tab:anchor-efficiency} reports CPU inference measurements for the
+Anchor variants. The absolute runtime differs by dataset size and number of
+predicted coordinates, but all variants remain lightweight deterministic
+procedures. The adaptive variants add modest overhead relative to NaiveAnchor
+because they evaluate a richer rule set, yet \method{} still produces hundreds
+to thousands of predictions per second on CPU. This matters for the audit
+framing: the controls are not only non-neural, but also computationally simple
+enough to serve as routine diagnostic baselines.
+
+\paragraph{Temporal-information probes.}
+Table~\ref{tab:temporal-tests} isolates the temporal information used by
+\method{} itself. On P12 and HumanActivity, timestamp shuffling leaves the error
+essentially unchanged, whereas keeping only time gaps causes large degradation.
+This indicates that the strong Anchor performance in these settings can be
+obtained from observed values and local history without strong dependence on
+exact timestamp geometry. USHCN behaves differently: shuffling timestamps,
+swapping history halves, or retaining only the last observation all substantially
+increase error. This supports the main-text interpretation that AutoAnchor's
+USHCN performance depends much more on temporal arrangement than its P12 or
+HumanActivity performance.
+
+\paragraph{Improvement over persistence.}
+Table~\ref{tab:paired-anchor-tests} compares \method{} directly with
+NaiveAnchor at the entity level. The gains over persistence are large and
+statistically clear for P12, USHCN, and HumanActivity, and MIMIC shows a strong
+MSE improvement even though the MAE interval includes zero. This paired
+comparison is important because it separates the claim ``history is useful''
+from the stronger claim made by the Anchor family: selecting among several
+transparent history-derived structures gives a meaningfully stronger diagnostic
+control than last-value persistence alone.
+
+\paragraph{Volatility and density strata.}
+Tables~\ref{tab:anchor-volatility-strata} and~\ref{tab:anchor-density-strata}
+show where \method{} improves over NaiveAnchor. Across all four datasets, the
+MSE reduction is positive in every volatility and density stratum. The largest
+relative reductions often occur in more difficult strata: high-volatility
+targets in P12, MIMIC, USHCN, and HumanActivity, and low- or high-density
+targets in USHCN. These stratified results suggest that the Anchor improvements
+are not confined to trivially stable or densely observed cases. Instead,
+transparent history-derived rules continue to explain a substantial fraction of
+error even when recent history is volatile or observation density changes.
+
+In conclusion, the appendix reinforces the main diagnostic finding: strong performance across current IMTS benchmarks can often be explained by simple, transparent structures already present in the observed history. The specific mechanism varies across datasets, ranging from persistence and smoothing to recurrence and adaptive rule selection, but these controls remain lightweight and consistently improve over pure persistence across diverse volatility and observation-density regimes. At the same time, the temporal probes reveal meaningful dataset differences, with some benchmarks requiring little precise timestamp structure and others depending strongly on temporal arrangement.
+
+
+
+\begin{table*}[t]
+\caption{Candidate-removal ablations. Entries are global scaled MSE/MAE; deltas
+are relative to full \method{} on the same dataset.}
+\label{tab:candidate-removal}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c}
+\toprule
+Dataset & Condition & MSE & $\Delta$MSE & MAE & $\Delta$MAE \\
+\midrule
+\multirow{5}{*}{P12} & full \method{} & 0.3020 & +0.0000 & 0.3585 & +0.0000 \\
+& ERM only & 0.3020 & +0.0000 & 0.3585 & +0.0000 \\
+& rules only & 0.3992 & +0.0972 & 0.3951 & +0.0366 \\
+& minus EMA & 0.3157 & +0.0137 & 0.3683 & +0.0098 \\
+& minus trend & 0.3019 & -0.0001 & 0.3585 & -0.0001 \\
+\midrule
+\multirow{5}{*}{USHCN} & full \method{} & 0.1565 & +0.0000 & 0.2187 & +0.0000 \\
+& ERM only & 0.1662 & +0.0097 & 0.2634 & +0.0447 \\
+& rules only & 0.1565 & +0.0000 & 0.2187 & +0.0000 \\
+& minus sparse & 0.1848 & +0.0283 & 0.2719 & +0.0532 \\
+& minus phase & 0.2181 & +0.0616 & 0.2605 & +0.0418 \\
+\midrule
+\multirow{5}{*}{HumanActivity} & full \method{} & 0.0420 & +0.0000 & 0.1148 & +0.0000 \\
+& ERM only & 0.0428 & +0.0009 & 0.1131 & -0.0016 \\
+& rules only & 0.0420 & +0.0000 & 0.1148 & +0.0000 \\
+& minus EMA & 0.0483 & +0.0064 & 0.1193 & +0.0046 \\
+& minus sparse/trend/phase & 0.0420 & +0.0000 & 0.1148 & +0.0000 \\
+\midrule
+\multirow{7}{*}{MIMIC} & full \method{} & 0.3785 & +0.0000 & 0.3657 & +0.0000 \\
+& ERM only & 0.3782 & -0.0002 & 0.3658 & +0.0001 \\
+& rules only & 0.4560 & +0.0775 & 0.3709 & +0.0053 \\
+& minus EMA & 0.3878 & +0.0094 & 0.3684 & +0.0027 \\
+& minus sparse & 0.3782 & -0.0002 & 0.3658 & +0.0001 \\
+& minus trend & 0.3796 & +0.0011 & 0.3673 & +0.0016 \\
+& minus phase & 0.3782 & -0.0003 & 0.3660 & +0.0003 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{Anchor-family computational efficiency across datasets. \textbf{Bold} marks the best
+value in each metric column, and \underline{underlining} marks the second best.
+Lower is better for CPU Total and CPU ms/Pred.; higher is better for Pred./s.}
+\label{tab:anchor-efficiency}
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|c|c|c|c|c|c|c|c|c|c|c|c}
+\toprule
+Method
+& \multicolumn{3}{|c|}{\begin{tabular}[c]{@{}c@{}}P12\end{tabular}}
+& \multicolumn{3}{c|}{\begin{tabular}[c]{@{}c@{}}USHCN\end{tabular}}
+& \multicolumn{3}{c|}{\begin{tabular}[c]{@{}c@{}}HumanActivity\end{tabular}}
+& \multicolumn{3}{c}{\begin{tabular}[c]{@{}c@{}}MIMIC\end{tabular}} \\
+\cmidrule(lr){2-4}
+\cmidrule(lr){5-7}
+\cmidrule(lr){8-10}
+\cmidrule(lr){11-13}
+& CPU Total (s) & ms/Pred. & Pred./s
+& CPU Total (s) & ms/Pred. & Pred./s
+& CPU Total (s) & ms/Pred. & Pred./s
+& CPU Total (s) & ms/Pred. & Pred./s \\
+\midrule
+NaiveAnchor
+& \second{9.1592} & \second{0.4245} & \second{2356.0}
+& \second{0.3055} & \second{0.8301} & \second{1204.7}
+& \second{1.5235} & \second{0.2578} & \second{3879.1}
+& \best{18.6622} & \best{1.4117} & \best{708.4} \\
+
+ExpoAnchor
+& 9.3953 & 0.4354 & 2296.8
+& \best{0.2843} & \best{0.7725} & \best{1294.4}
+& 1.6863 & 0.2853 & 3504.7
+& \second{18.7083} & \second{1.4151} & \second{706.6} \\
+
+SparseAnchor
+& \best{9.1545} & \best{0.4242} & \best{2357.2}
+& 0.3069 & 0.8339 & 1199.2
+& \best{1.4389} & \best{0.2435} & \best{4107.2}
+& 19.1243 & 1.4466 & 691.3 \\
+
+ERMAnchor
+& 9.4662 & 0.4387 & 2279.6
+& 0.3250 & 0.8832 & 1132.2
+& 1.6848 & 0.2851 & 3507.8
+& 19.1358 & 1.4475 & 690.9 \\
+
+\method{}
+& 9.6304 & 0.4463 & 2240.7
+& 0.3414 & 0.9278 & 1077.8
+& 1.6722 & 0.2829 & 3534.3
+& 19.4374 & 1.4703 & 680.1 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+\begin{table*}[t]
+\caption{Anchor-family ablation ladder. Lower is better for MSE and MAE.
+Bold marks the best Anchor-family value within each dataset; underline marks
+the second best. Positive deltas indicate improvement over NaiveAnchor.}
+\label{tab:anchor-family-ladder}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c}
+\toprule
+Dataset & Method & MSE & $\Delta$ MSE vs Naive & MAE & $\Delta$ MAE vs Naive \\
+\midrule
+\multirow{5}{*}{\begin{tabular}[c]{@{}c@{}}P12\end{tabular}} & NaiveAnchor & 0.3992 & +0.0000 & 0.3951 & +0.0000 \\
+ & ExpoAnchor & \second{0.3286} & +0.0706 & \second{0.3753} & +0.0198 \\
+ & SparseAnchor & 0.3992 & +0.0000 & 0.3951 & +0.0000 \\
+ & ERMAnchor & \best{0.3020} & +0.0972 & \best{0.3585} & +0.0366 \\
+ & \method{} & \best{0.3020} & +0.0972 & \best{0.3585} & +0.0366 \\
+\midrule
+\multirow{5}{*}{\begin{tabular}[c]{@{}c@{}}USHCN\end{tabular}} & NaiveAnchor & 0.3640 & +0.0000 & 0.3291 & +0.0000 \\
+ & ExpoAnchor & 0.5923 & -0.2284 & 0.5117 & -0.1826 \\
+ & SparseAnchor & 0.2661 & +0.0978 & 0.2812 & +0.0479 \\
+ & ERMAnchor & \second{0.1662} & +0.1978 & \second{0.2634} & +0.0657 \\
+ & \method{} & \best{0.1565} & +0.2074 & \best{0.2187} & +0.1104 \\
+\midrule
+\multirow{5}{*}{\begin{tabular}[c]{@{}c@{}}HumanActivity\end{tabular}} & NaiveAnchor & 0.0605 & +0.0000 & 0.1225 & +0.0000 \\
+ & ExpoAnchor & \best{0.0420} & +0.0185 & \second{0.1148} & +0.0078 \\
+ & SparseAnchor & 0.0605 & +0.0000 & 0.1225 & +0.0000 \\
+ & ERMAnchor & \second{0.0428} & +0.0177 & \best{0.1131} & +0.0094 \\
+ & \method{} & \best{0.0420} & +0.0185 & \second{0.1148} & +0.0078 \\
+\midrule
+\multirow{5}{*}{\begin{tabular}[c]{@{}c@{}}MIMIC\end{tabular}} & NaiveAnchor & 0.4561 & +0.0000 & 0.3708 & +0.0000 \\
+ & ExpoAnchor & 0.6431 & -0.1870 & 0.4974 & -0.1266 \\
+ & SparseAnchor & 0.4560 & +0.0002 & 0.3709 & -0.0001 \\
+ & ERMAnchor & \best{0.3782} & +0.0779 & \second{0.3658} & +0.0050 \\
+ & \method{} & \second{0.3785} & +0.0777 & \best{0.3657} & +0.0051 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\caption{Temporal-information tests for \method{}. Values are global scaled
+MSE/MAE; $\Delta$MSE is relative to the original history condition. Lower is
+better.}
+\label{tab:temporal-tests}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c}
+\toprule
+Dataset & History condition & MSE & $\Delta$MSE & MAE & $\Delta$MAE \\
+\midrule
+\multirow{6}{*}{P12} & original & 0.3020 & +0.0000 & 0.3585 & +0.0000 \\
+& shuffle timestamps & 0.3020 & -0.0000 & 0.3585 & -0.0001 \\
+& swap halves & 0.4325 & +0.1305 & 0.4568 & +0.0983 \\
+& drop early history & 0.3030 & +0.0010 & 0.3594 & +0.0008 \\
+& keep last obs. & 0.3383 & +0.0363 & 0.3842 & +0.0256 \\
+& keep time gaps only & 0.8017 & +0.4996 & 0.6930 & +0.3345 \\
+\midrule
+\multirow{5}{*}{USHCN} & original & 0.1565 & +0.0000 & 0.2187 & +0.0000 \\
+& shuffle timestamps & 0.5159 & +0.3594 & 0.4301 & +0.2114 \\
+& swap halves & 0.8154 & +0.6588 & 0.5435 & +0.3248 \\
+& keep last obs. & 0.3640 & +0.2074 & 0.3291 & +0.1104 \\
+& keep time gaps only & 0.4927 & +0.3362 & 0.4929 & +0.2742 \\
+\midrule
+\multirow{5}{*}{HumanActivity} & original & 0.0420 & +0.0000 & 0.1148 & +0.0000 \\
+& shuffle timestamps & 0.0420 & +0.0000 & 0.1148 & +0.0000 \\
+& swap halves & 0.1031 & +0.0611 & 0.1923 & +0.0775 \\
+& keep last obs. & 0.0605 & +0.0185 & 0.1225 & +0.0078 \\
+& keep time gaps only & 4.2491 & +4.2071 & 1.7014 & +1.5866 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\caption{Paired entity-level comparison of \method{} and NaiveAnchor. Deltas
+are \method{} minus NaiveAnchor, so negative values favor \method{}.
+Intervals use paired entity bootstrap; $p$-values use paired entity-level sign
+flips. This comparison measures improvement over persistence within the Anchor
+family and is not a paired test against neural models.}
+\label{tab:paired-anchor-tests}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c}
+\toprule
+Dataset & Metric & Delta (95\% CI) & $p$ & Entities \\
+\midrule
+\multirow{2}{*}{P12} & MAE & -0.0366 [-0.0436, -0.0299] & $<10^{-4}$ & 1,181 \\
+& MSE & -0.0972 [-0.1125, -0.0820] & $<10^{-4}$ & 1,181 \\
+\multirow{2}{*}{MIMIC} & MAE & -0.0051 [-0.0126, +0.0021] & 0.1714 & 1,534 \\
+& MSE & -0.0777 [-0.1010, -0.0545] & $<10^{-4}$ & 1,534 \\
+\multirow{2}{*}{USHCN} & MAE & -0.1104 [-0.1562, -0.0693] & $<10^{-4}$ & 112 \\
+& MSE & -0.2074 [-0.3165, -0.1149] & $<10^{-4}$ & 112 \\
+\multirow{2}{*}{HumanActivity} & MAE & -0.0078 [-0.0130, -0.0027] & 0.0041 & 218 \\
+& MSE & -0.0185 [-0.0273, -0.0107] & $<10^{-4}$ & 218 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\caption{\method{} and NaiveAnchor errors stratified by recent-history
+volatility. Positive MSE reduction favors \method{}; strata are
+dataset-specific target-level tertiles.}
+\label{tab:anchor-volatility-strata}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c|c}
+\toprule
+Dataset & Stratum & Auto MAE & Naive MAE & Auto MSE & Naive MSE & MSE red. (\%) \\
+\midrule
+\multirow{3}{*}{P12} & low & \best{0.1878} & \second{0.1882} & \best{0.1280} & \second{0.1396} & +8.3 \\
+& mid & \best{0.3860} & \second{0.4240} & \best{0.2851} & \second{0.3641} & +21.7 \\
+& high & \best{0.5018} & \second{0.5733} & \best{0.4930} & \second{0.6939} & +29.0 \\
+\multirow{3}{*}{MIMIC} & low & \second{0.2376} & \best{0.2136} & \best{0.2123} & \second{0.2170} & +2.1 \\
+& mid & \best{0.3607} & \second{0.3646} & \best{0.2870} & \second{0.3290} & +12.8 \\
+& high & \best{0.4987} & \second{0.5342} & \best{0.6361} & \second{0.8224} & +22.7 \\
+\multirow{3}{*}{USHCN} & low & \best{0.0295} & \second{0.0320} & \best{0.0075} & \second{0.0122} & +38.3 \\
+& mid & \best{0.3400} & \second{0.4622} & \best{0.2495} & \second{0.4717} & +47.1 \\
+& high & \best{0.2875} & \second{0.4943} & \best{0.2133} & \second{0.6088} & +65.0 \\
+\multirow{3}{*}{HumanActivity} & low & \best{0.0470} & \second{0.0535} & \best{0.0059} & \second{0.0072} & +18.0 \\
+& mid & \best{0.1053} & \second{0.1125} & \best{0.0292} & \second{0.0337} & +13.4 \\
+& high & \best{0.1921} & \second{0.2015} & \best{0.0908} & \second{0.1406} & +35.4 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\caption{\method{} and NaiveAnchor errors stratified by observation density.
+Positive MSE reduction favors \method{}; strata are dataset-specific
+target-level tertiles.}
+\label{tab:anchor-density-strata}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|l|c|c|c|c|c}
+\toprule
+Dataset & Stratum & Auto MAE & Naive MAE & Auto MSE & Naive MSE & MSE red. (\%) \\
+\midrule
+\multirow{3}{*}{P12} & low & \best{0.3544} & \second{0.3753} & \best{0.2985} & \second{0.3778} & +21.0 \\
+& mid & \best{0.3760} & \second{0.4170} & \best{0.3066} & \second{0.4138} & +25.9 \\
+& high & \best{0.3452} & \second{0.3930} & \best{0.3009} & \second{0.4060} & +25.9 \\
+\multirow{3}{*}{MIMIC} & low & \best{0.3642} & \second{0.3792} & \best{0.3207} & \second{0.4034} & +20.5 \\
+& mid & \best{0.3822} & \second{0.3863} & \best{0.3786} & \second{0.4418} & +14.3 \\
+& high & \second{0.3506} & \best{0.3470} & \best{0.4361} & \second{0.5232} & +16.6 \\
+\multirow{3}{*}{USHCN} & low & \best{0.2565} & \second{0.3914} & \best{0.1781} & \second{0.4589} & +61.2 \\
+& mid & \best{0.2236} & \second{0.2952} & \best{0.1832} & \second{0.3221} & +43.1 \\
+& high & \best{0.1760} & \second{0.3005} & \best{0.1084} & \second{0.3105} & +65.1 \\
+\multirow{3}{*}{HumanActivity} & low & \best{0.1340} & \second{0.1392} & \best{0.0510} & \second{0.0757} & +32.6 \\
+& mid & \best{0.1111} & \second{0.1174} & \best{0.0391} & \second{0.0527} & +25.8 \\
+& high & \best{0.0992} & \second{0.1110} & \best{0.0357} & \second{0.0531} & +32.7 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
 \end{document}

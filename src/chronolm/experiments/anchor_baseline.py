@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 import time
 import warnings
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -23,6 +24,7 @@ add_apn_to_path()
 # they are not AutoAnchor tuning knobs.
 DATASET_DEFAULTS = {
     "P12": {"seq_len": 36, "pred_len": 3, "display_name": "PhysioNet P12"},
+    "MIMIC": {"seq_len": 72, "pred_len": 3, "display_name": "MIMIC-III"},
     "USHCN": {"seq_len": 150, "pred_len": 3, "display_name": "USHCN"},
     "HumanActivity": {
         "seq_len": 3000,
@@ -34,11 +36,35 @@ DATASET_DEFAULTS = {
 # Paper numbers used only for logging deltas after evaluation.
 APN_BASELINES = {
     "HumanActivity": {"MAE": 0.1159, "MSE": 0.0421},
+    "MIMIC": {"MAE": 0.4016, "MSE": 0.4292},
     "P12": {"MAE": 0.3650, "MSE": 0.3093},
     "USHCN": {"MAE": 0.2611, "MSE": 0.1590},
 }
 
 DEFAULT_ANCHOR_METHOD = "AutoAnchor"
+DEFAULT_AUTO_STRATEGY = "full"
+AUTO_STRATEGIES = ("full", "erm_only", "rules_only")
+HISTORY_PERTURBATIONS = (
+    "original",
+    "shuffle_timestamps",
+    "swap_halves",
+    "drop_early_history",
+    "keep_last_obs",
+    "keep_time_gaps",
+)
+CANDIDATE_EXCLUSION_ALIASES = {
+    "ema": "ema",
+    "exponential": "ema",
+    "exponential_smoothing": "ema",
+    "sparse": "sparse",
+    "sparse_history": "sparse",
+    "sparse-history": "sparse",
+    "mode": "sparse",
+    "trend": "trend",
+    "phase": "phase",
+    "seasonal": "phase",
+}
+STRUCTURAL_DIAGNOSTIC_COMPONENTS = ("last", "mode", "phase033k5", "trend8")
 ANCHOR_FAMILY_METHODS = (
     "NaiveAnchor",
     "ExpoAnchor",
@@ -160,6 +186,75 @@ AUTO_ANCHOR_COMPONENTS = tuple(
 )
 
 
+def canonical_candidate_exclusion(name: str) -> str:
+    normalized = name.strip().replace(" ", "_").lower()
+    try:
+        return CANDIDATE_EXCLUSION_ALIASES[normalized]
+    except KeyError as exc:
+        supported = ", ".join(sorted(set(CANDIDATE_EXCLUSION_ALIASES.values())))
+        raise ValueError(f"Unsupported candidate exclusion {name!r}. Use one of: {supported}") from exc
+
+
+def canonical_history_perturbation(name: str) -> str:
+    normalized = name.strip().replace("-", "_").lower()
+    if normalized in HISTORY_PERTURBATIONS:
+        return normalized
+    supported = ", ".join(HISTORY_PERTURBATIONS)
+    raise ValueError(f"Unsupported history perturbation {name!r}. Use one of: {supported}")
+
+
+def canonical_auto_strategy(name: str) -> str:
+    normalized = name.strip().replace("-", "_").lower()
+    aliases = {
+        "full": "full",
+        "auto": "full",
+        "auto_anchor": "full",
+        "erm": "erm_only",
+        "erm_only": "erm_only",
+        "rules": "rules_only",
+        "rules_only": "rules_only",
+        "auto_rules": "rules_only",
+        "auto_rules_only": "rules_only",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        supported = ", ".join(AUTO_STRATEGIES)
+        raise ValueError(f"Unsupported AutoAnchor strategy {name!r}. Use one of: {supported}") from exc
+
+
+def component_family(component: str) -> str | None:
+    if component.startswith("ema"):
+        return "ema"
+    if component == "mode":
+        return "sparse"
+    if component.startswith("trend"):
+        return "trend"
+    if component.startswith("phase"):
+        return "phase"
+    return None
+
+
+def candidate_allowed(candidate: AnchorCandidate, exclusions: Iterable[str]) -> bool:
+    excluded = set(exclusions)
+    return all(component_family(component) not in excluded for component, _ in candidate.components)
+
+
+def filtered_anchor_candidates(exclusions: Iterable[str]) -> tuple[AnchorCandidate, ...]:
+    excluded = tuple(dict.fromkeys(canonical_candidate_exclusion(value) for value in exclusions))
+    return tuple(candidate for candidate in AUTO_ANCHOR_CANDIDATES if candidate_allowed(candidate, excluded))
+
+
+def components_for_candidates(candidates: Iterable[AnchorCandidate]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            component
+            for candidate in candidates
+            for component, _weight in candidate.components
+        )
+    )
+
+
 def canonical_dataset_name(dataset_name: str) -> str:
     normalized = dataset_name.strip().replace("-", "_").upper()
     aliases = {
@@ -167,6 +262,11 @@ def canonical_dataset_name(dataset_name: str) -> str:
         "PHYSIONET2012": "P12",
         "PHYSIONET_2012": "P12",
         "P12": "P12",
+        "MIMIC": "MIMIC",
+        "MIMICIII": "MIMIC",
+        "MIMIC_III": "MIMIC",
+        "MIMIC3": "MIMIC",
+        "MIMIC_3": "MIMIC",
         "USHCN": "USHCN",
         "USHCN_DEBROUWER2019": "USHCN",
         "HUMANACTIVITY": "HumanActivity",
@@ -225,6 +325,12 @@ class AnchorConfig:
     seq_len: int | None = None
     pred_len: int | None = None
     max_test_samples: int | None = None
+    auto_strategy: str = DEFAULT_AUTO_STRATEGY
+    candidate_exclusions: tuple[str, ...] = ()
+    history_perturbation: str = "original"
+    history_keep_fraction: float = 1.0
+    random_seed: int = 1729
+    overwrite: bool = False
     run_name: str | None = None
     output_dir: Path | None = None
     output_csv: Path | None = None
@@ -239,6 +345,16 @@ class AnchorConfig:
     def __post_init__(self) -> None:
         dataset_name = canonical_dataset_name(self.dataset_name)
         anchor_method = canonical_anchor_method(self.anchor_method)
+        auto_strategy = canonical_auto_strategy(self.auto_strategy)
+        history_perturbation = canonical_history_perturbation(self.history_perturbation)
+        if not (0.0 < float(self.history_keep_fraction) <= 1.0):
+            raise ValueError(f"history_keep_fraction must be in (0, 1], got {self.history_keep_fraction}")
+        candidate_exclusions = tuple(
+            dict.fromkeys(
+                canonical_candidate_exclusion(value)
+                for value in self.candidate_exclusions
+            )
+        )
         defaults = DATASET_DEFAULTS[dataset_name]
         method_slug = ANCHOR_METHOD_SLUGS[anchor_method]
         run_name = self.run_name or f"{RUN_NAME_PREFIX}_{method_slug}_{dataset_name.lower()}"
@@ -247,6 +363,9 @@ class AnchorConfig:
 
         object.__setattr__(self, "dataset_name", dataset_name)
         object.__setattr__(self, "anchor_method", anchor_method)
+        object.__setattr__(self, "auto_strategy", auto_strategy)
+        object.__setattr__(self, "candidate_exclusions", candidate_exclusions)
+        object.__setattr__(self, "history_perturbation", history_perturbation)
         object.__setattr__(self, "seq_len", self.seq_len or defaults["seq_len"])
         object.__setattr__(self, "pred_len", self.pred_len or defaults["pred_len"])
         object.__setattr__(self, "run_name", run_name)
@@ -605,7 +724,12 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
     if config.dataset_name == "P12":
         from data.dependencies.tsdm.tasks.P12 import Physionet2012
 
-        task = Physionet2012(seq_len=config.seq_len, pred_len=config.pred_len)
+        # Match APN/data/data_provider/datasets/P12.py. The task includes times
+        # at the observation boundary, so APN subtracts half a sampling step.
+        task = Physionet2012(
+            seq_len=float(config.seq_len) - 0.5,
+            pred_len=config.pred_len,
+        )
         encoder = task.encoder.column_encoders
         columns = list(task.dataset.columns)
         encoder_columns = list(task.encoder.columns)
@@ -640,6 +764,62 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
             time_unit="hours after ICU admission",
             entity_label="patient",
         )
+
+    if config.dataset_name == "MIMIC":
+        from data.dependencies.tsdm.datasets import (
+            MIMIC_III_DeBrouwer2019 as MIMIC_III_Dataset,
+        )
+        from data.dependencies.tsdm.tasks.mimic_iii_debrouwer2019 import (
+            MIMIC_III_DeBrouwer2019,
+        )
+
+        # Match APN/data/data_provider/datasets/MIMIC_III.py exactly. APN passes
+        # seq_len - 0.5 because the observation boundary is inclusive.
+        task = MIMIC_III_DeBrouwer2019(
+            seq_len=float(config.seq_len) - 0.5,
+            pred_len=config.pred_len,
+        )
+        columns = list(task.dataset.columns)
+        metadata = MIMIC_III_Dataset()["metadata"].set_index("LABEL_CODE")
+        label_codes = [int(column_name) for column_name in columns]
+        missing_codes = [code for code in label_codes if code not in metadata.index]
+        if missing_codes:
+            raise ValueError(
+                "De Brouwer MIMIC metadata is missing label codes: "
+                + ", ".join(str(code) for code in missing_codes)
+            )
+
+        offset = metadata.loc[label_codes, "MEANS"].to_numpy(dtype=np.float64)
+        scale = metadata.loc[label_codes, "STDVS"].to_numpy(dtype=np.float64)
+        invalid_scale = (~np.isfinite(scale)) | (scale <= 1e-8)
+        scale[invalid_scale] = 1.0
+
+        train_dataset = task.get_dataset((0, "train"))
+        validation_dataset = task.get_dataset((0, "val"))
+
+        return BenchmarkData(
+            name="MIMIC",
+            display_name="MIMIC-III",
+            test_dataset=task.get_dataset((0, "test")),
+            fit_dataset=materialize_dataset(train_dataset),
+            selection_dataset=materialize_dataset(validation_dataset),
+            lookback_span=float(config.seq_len),
+            columns=columns,
+            encoder_index_by_column={
+                column_name: column_index
+                for column_index, column_name in enumerate(columns)
+            },
+            scaled_to_raw=lambda value, index: float(value * scale[index] + offset[index]),
+            raw_to_scaled=lambda value, index: float((value - offset[index]) / scale[index]),
+            # The task normalizes its 96 half-hour bins to [0, 1]. Convert back
+            # to APN sequence steps so phase periods and seq_len share units.
+            time_to_prompt=lambda value: value * 96.0,
+            format_timestamp=lambda value: hours_to_timestamp(value / 2.0),
+            format_tail_time=lambda value: f"{value / 2.0:.2f}h",
+            time_unit="hours after ICU admission",
+            entity_label="patient",
+        )
+
 
     if config.dataset_name == "USHCN":
         from data.dependencies.tsdm.tasks.ushcn_debrouwer2019 import USHCN_DeBrouwer2019
@@ -792,6 +972,181 @@ def compute_global_scaled_metrics(detail_log_csv: Path) -> dict[str, float] | No
     }
 
 
+def experiment_variant(config: AnchorConfig) -> str:
+    parts: list[str] = []
+    if config.anchor_method == "AutoAnchor" and config.auto_strategy != "full":
+        parts.append(config.auto_strategy)
+    if config.candidate_exclusions:
+        parts.append("minus_" + "_".join(config.candidate_exclusions))
+    if config.history_perturbation != "original":
+        parts.append(config.history_perturbation)
+    if float(config.history_keep_fraction) < 1.0:
+        parts.append(f"keep{int(round(float(config.history_keep_fraction) * 100)):03d}")
+    defaults = DATASET_DEFAULTS[config.dataset_name]
+    if config.seq_len != defaults["seq_len"] or config.pred_len != defaults["pred_len"]:
+        parts.append(f"sl{config.seq_len}_pl{config.pred_len}")
+    return "+".join(parts) if parts else "default"
+
+
+def experiment_method_label(config: AnchorConfig) -> str:
+    variant = experiment_variant(config)
+    if variant == "default":
+        return config.anchor_method
+    return f"{config.anchor_method}:{variant}"
+
+
+def stable_seed(*parts: object) -> int:
+    payload = "|".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "little") & 0xFFFFFFFF
+
+
+def apply_history_perturbation(
+    extracted: dict[str, object],
+    benchmark: BenchmarkData,
+    config: AnchorConfig,
+    variable_index: int,
+    encoder_index: int,
+    sample_index: int,
+) -> dict[str, object]:
+    perturbation = config.history_perturbation
+    if perturbation == "original" and float(config.history_keep_fraction) >= 1.0:
+        return extracted
+
+    history_scaled = list(extracted["history_scaled"])
+    history_raw = list(extracted["history_raw"])
+    history_times = list(extracted["history_times"])
+    n_history = len(history_scaled)
+    if n_history == 0:
+        return extracted
+
+    if perturbation == "original":
+        pass
+    elif perturbation == "shuffle_timestamps":
+        rng = np.random.default_rng(
+            stable_seed(config.random_seed, benchmark.name, variable_index, sample_index)
+        )
+        order = rng.permutation(n_history)
+        history_times = [history_times[int(index)] for index in order]
+    elif perturbation == "swap_halves":
+        midpoint = n_history // 2
+        order = list(range(midpoint, n_history)) + list(range(0, midpoint))
+        history_scaled = [history_scaled[index] for index in order]
+        history_raw = [history_raw[index] for index in order]
+    elif perturbation == "drop_early_history":
+        keep_from = max(0, n_history // 2)
+        history_scaled = history_scaled[keep_from:]
+        history_raw = history_raw[keep_from:]
+        history_times = history_times[keep_from:]
+    elif perturbation == "keep_last_obs":
+        history_scaled = [history_scaled[-1]]
+        history_raw = [history_raw[-1]]
+        history_times = [history_times[-1]]
+    elif perturbation == "keep_time_gaps":
+        history_scaled = [0.0 for _ in history_scaled]
+        history_raw = [benchmark.scaled_to_raw(0.0, encoder_index) for _ in history_scaled]
+    else:
+        raise ValueError(f"Unsupported history perturbation: {perturbation}")
+
+    keep_fraction = float(config.history_keep_fraction)
+    if keep_fraction < 1.0 and len(history_scaled) > 1:
+        rng = np.random.default_rng(
+            stable_seed(
+                config.random_seed,
+                benchmark.name,
+                variable_index,
+                sample_index,
+                "history_keep_fraction",
+                f"{keep_fraction:.6f}",
+            )
+        )
+        n_keep = max(1, int(round(len(history_scaled) * keep_fraction)))
+        keep_indices = sorted(int(index) for index in rng.choice(len(history_scaled), size=n_keep, replace=False))
+        history_scaled = [history_scaled[index] for index in keep_indices]
+        history_raw = [history_raw[index] for index in keep_indices]
+        history_times = [history_times[index] for index in keep_indices]
+
+    perturbed = dict(extracted)
+    perturbed["history_scaled"] = history_scaled
+    perturbed["history_raw"] = history_raw
+    perturbed["history_times"] = history_times
+    return perturbed
+
+
+def history_diagnostics(history_times: list[float], history_scaled: list[float]) -> dict[str, float]:
+    n_history = len(history_scaled)
+    if n_history == 0:
+        return {
+            "History_n": 0.0,
+            "History_span": 0.0,
+            "History_density": 0.0,
+            "History_last_gap": float("nan"),
+            "History_median_gap": float("nan"),
+            "History_volatility": float("nan"),
+            "History_mode_fraction": float("nan"),
+        }
+
+    times = np.asarray(history_times, dtype=float)
+    values = np.asarray(history_scaled, dtype=float)
+    finite_values = values[np.isfinite(values)]
+    span = float(np.nanmax(times) - np.nanmin(times)) if len(times) else 0.0
+    sorted_times = np.sort(times[np.isfinite(times)])
+    gaps = np.diff(sorted_times) if len(sorted_times) > 1 else np.asarray([], dtype=float)
+    if len(finite_values):
+        rounded = [round(float(value), 4) for value in finite_values]
+        mode_fraction = Counter(rounded).most_common(1)[0][1] / len(rounded)
+        volatility = float(np.std(finite_values))
+    else:
+        mode_fraction = float("nan")
+        volatility = float("nan")
+
+    return {
+        "History_n": float(n_history),
+        "History_span": span,
+        "History_density": float(n_history / span) if span > 1e-12 else float(n_history),
+        "History_last_gap": float(gaps[-1]) if len(gaps) else float("nan"),
+        "History_median_gap": float(np.median(gaps)) if len(gaps) else float("nan"),
+        "History_volatility": volatility,
+        "History_mode_fraction": float(mode_fraction),
+    }
+
+
+def prepare_extracted_sample(
+    extracted: dict[str, object],
+    benchmark: BenchmarkData,
+    config: AnchorConfig,
+    variable_index: int,
+    encoder_index: int,
+    sample_index: int,
+    components: Iterable[str] | None = None,
+) -> dict[str, object]:
+    extracted = apply_history_perturbation(
+        extracted=extracted,
+        benchmark=benchmark,
+        config=config,
+        variable_index=variable_index,
+        encoder_index=encoder_index,
+        sample_index=sample_index,
+    )
+    extracted["lookback_span"] = float(config.seq_len)
+    extracted["clip_bounds_raw"] = recent_history_bounds(extracted["history_raw"])
+    extracted["history_diagnostics"] = history_diagnostics(
+        extracted["history_times"],
+        extracted["history_scaled"],
+    )
+    if components is not None:
+        extracted["component_forecasts_scaled"] = {
+            component: component_forecast_scaled(
+                component=component,
+                history_times=extracted["history_times"],
+                history_scaled=extracted["history_scaled"],
+                target_times=extracted["target_times"],
+                lookback_span=float(config.seq_len),
+            )
+            for component in components
+        }
+    return extracted
+
+
 def extract_variable_sample(
     sample: object,
     benchmark: BenchmarkData,
@@ -869,19 +1224,17 @@ def extract_variable_samples(
             pred_len=config.pred_len,
         )
         if extracted is not None:
-            extracted["lookback_span"] = float(config.seq_len)
-            extracted["clip_bounds_raw"] = recent_history_bounds(extracted["history_raw"])
-            extracted["component_forecasts_scaled"] = {
-                component: component_forecast_scaled(
-                    component=component,
-                    history_times=extracted["history_times"],
-                    history_scaled=extracted["history_scaled"],
-                    target_times=extracted["target_times"],
-                    lookback_span=float(config.seq_len),
+            samples.append(
+                prepare_extracted_sample(
+                    extracted=extracted,
+                    benchmark=benchmark,
+                    config=config,
+                    variable_index=variable_index,
+                    encoder_index=encoder_index,
+                    sample_index=sample_index,
+                    components=components_to_cache,
                 )
-                for component in components_to_cache
-            }
-            samples.append(extracted)
+            )
     return samples
 
 
@@ -1066,21 +1419,22 @@ def choose_structural_prior_method(
     mode_fraction = stats["mode_fraction"]
     unique_count = stats["unique_count"]
     horizon_ratio = float(config.pred_len) / float(config.seq_len)
+    sparse_allowed = "sparse" not in config.candidate_exclusions
 
-    if mode_fraction > 0.95:
+    if sparse_allowed and mode_fraction > 0.95:
         return (
             "mode",
             f"dominant observed value; mode_fraction={mode_fraction:.4f}",
         )
 
-    if mode_fraction > 0.50 and unique_count > 150:
+    if sparse_allowed and mode_fraction > 0.50 and unique_count > 150:
         return (
             "mode",
             "high-cardinality sparse channel with dominant baseline; "
             f"mode_fraction={mode_fraction:.4f}; unique_count={unique_count:.0f}",
         )
 
-    if mode_fraction > 0.50:
+    if sparse_allowed and mode_fraction > 0.50:
         return (
             "mix_last80_phase033k520",
             "sparse channel with recent departures from baseline; "
@@ -1216,11 +1570,12 @@ def select_erm_spec(
     fit_samples: list[dict[str, object]],
     validation_samples: list[dict[str, object]],
     calibration_samples: list[dict[str, object]],
+    candidates: Iterable[AnchorCandidate] = AUTO_ANCHOR_CANDIDATES,
 ) -> AnchorSpec | None:
     best_spec: AnchorSpec | None = None
     best_key: tuple[float, float, float, str, str] | None = None
 
-    for candidate in AUTO_ANCHOR_CANDIDATES:
+    for candidate in candidates:
         beta_options = candidate_beta_options(
             samples=calibration_samples,
             candidate=candidate,
@@ -1264,6 +1619,7 @@ def build_family_spec(
     fit_samples: list[dict[str, object]],
     validation_samples: list[dict[str, object]],
     calibration_samples: list[dict[str, object]],
+    candidates: Iterable[AnchorCandidate] = AUTO_ANCHOR_CANDIDATES,
 ) -> AnchorSpec | None:
     if family_method == "NaiveAnchor":
         return build_spec_for_candidate(
@@ -1320,27 +1676,48 @@ def build_family_spec(
             fit_samples=fit_samples,
             validation_samples=validation_samples,
             calibration_samples=calibration_samples,
+            candidates=candidates,
         )
 
     if family_method == "AutoAnchor":
-        best_spec = select_erm_spec(
-            benchmark=benchmark,
-            encoder_index=encoder_index,
-            fit_samples=fit_samples,
-            validation_samples=validation_samples,
-            calibration_samples=calibration_samples,
-        )
-        structural_prior = choose_structural_prior_method(calibration_samples, config)
-        if structural_prior is not None:
-            method, rationale = structural_prior
+        candidate_by_name = {candidate.name: candidate for candidate in candidates}
+        best_spec = None
+        if config.auto_strategy in {"full", "erm_only"}:
+            best_spec = select_erm_spec(
+                benchmark=benchmark,
+                encoder_index=encoder_index,
+                fit_samples=fit_samples,
+                validation_samples=validation_samples,
+                calibration_samples=calibration_samples,
+                candidates=candidates,
+            )
+
+        if config.auto_strategy in {"full", "rules_only"}:
+            structural_prior = choose_structural_prior_method(calibration_samples, config)
+            if structural_prior is not None:
+                method, rationale = structural_prior
+                if method in candidate_by_name:
+                    best_spec = build_spec_for_candidate(
+                        benchmark=benchmark,
+                        encoder_index=encoder_index,
+                        candidate=candidate_by_name[method],
+                        beta=1.0,
+                        beta_source="identity",
+                        source="history_structural_prior",
+                        rationale=rationale,
+                        fit_samples=fit_samples,
+                        validation_samples=validation_samples,
+                        calibration_samples=calibration_samples,
+                    )
+        if best_spec is None and config.auto_strategy == "rules_only":
             best_spec = build_spec_for_candidate(
                 benchmark=benchmark,
                 encoder_index=encoder_index,
-                candidate=AUTO_ANCHOR_BY_NAME[method],
+                candidate=AUTO_ANCHOR_BY_NAME["last"],
                 beta=1.0,
                 beta_source="identity",
-                source="history_structural_prior",
-                rationale=rationale,
+                source="history_structural_prior_fallback",
+                rationale="AutoAnchor rules-only: no structural rule fired; fallback to last value",
                 fit_samples=fit_samples,
                 validation_samples=validation_samples,
                 calibration_samples=calibration_samples,
@@ -1353,6 +1730,7 @@ def build_family_spec(
 def required_components_for_family_method(
     family_method: str,
     config: AnchorConfig,
+    candidates: Iterable[AnchorCandidate],
 ) -> tuple[str, ...]:
     if family_method == "NaiveAnchor":
         return ("last",)
@@ -1363,7 +1741,10 @@ def required_components_for_family_method(
     if family_method == "SparseAnchor":
         return ("last", "mode", "phase033k5", "trend8")
 
-    return AUTO_ANCHOR_COMPONENTS
+    candidate_components = components_for_candidates(candidates)
+    if family_method in {"SparseAnchor", "AutoAnchor"}:
+        return tuple(dict.fromkeys((*candidate_components, *STRUCTURAL_DIAGNOSTIC_COMPONENTS)))
+    return candidate_components
 
 
 def calibrate_anchor_family(
@@ -1374,7 +1755,11 @@ def calibrate_anchor_family(
 ) -> dict[str, AnchorSpec]:
     specs: dict[str, AnchorSpec] = {}
     family_method = config.anchor_method
-    required_components = required_components_for_family_method(family_method, config)
+    family_label = experiment_method_label(config)
+    candidates = filtered_anchor_candidates(config.candidate_exclusions)
+    if not candidates:
+        raise ValueError(f"Candidate exclusions removed every AutoAnchor candidate: {config.candidate_exclusions}")
+    required_components = required_components_for_family_method(family_method, config, candidates)
 
     for variable_index, variable_name in enumerate(benchmark.columns):
         encoder_index = benchmark.encoder_index_by_column[variable_name]
@@ -1403,6 +1788,7 @@ def calibrate_anchor_family(
             fit_samples=fit_samples,
             validation_samples=validation_samples,
             calibration_samples=calibration_samples,
+            candidates=candidates,
         )
 
         if best_spec is None:
@@ -1424,7 +1810,7 @@ def calibrate_anchor_family(
             )
 
         specs[variable_name] = best_spec
-        append_calibration_row(rows, benchmark, family_method, variable_name, best_spec)
+        append_calibration_row(rows, benchmark, family_label, variable_name, best_spec)
         logger.info(
             "  [%s] %s method=%s beta=%.4f (%s) source=%s cal_mae=%.6f "
             "cal_mse=%.6f train_mse=%.6f val_mse=%.6f points=%s",
@@ -1450,13 +1836,22 @@ def calibrate_anchor_specs(
     logger: logging.Logger,
 ) -> dict[str, AnchorSpec]:
     rows: list[dict[str, object]] = []
+    selection_config = replace(
+        config,
+        history_perturbation="original",
+        history_keep_fraction=1.0,
+    )
 
-    logger.info("Calibrating %s with the shared anchor family...", config.anchor_method)
+    candidates = filtered_anchor_candidates(config.candidate_exclusions)
+    logger.info("Calibrating %s with the shared anchor family...", experiment_method_label(config))
     logger.info("  Fit samples: %s", len(benchmark.fit_dataset))
     logger.info("  Validation samples: %s", len(benchmark.selection_dataset))
     logger.info("  Selection objective: %s", config.anchor_method)
-    logger.info("  Candidate rules: %s", len(AUTO_ANCHOR_CANDIDATES))
-    specs = calibrate_anchor_family(benchmark, config, logger, rows)
+    logger.info("  Auto strategy: %s", config.auto_strategy)
+    logger.info("  Candidate exclusions: %s", ",".join(config.candidate_exclusions) or "none")
+    logger.info("  Selection history: original (frozen before test perturbation)")
+    logger.info("  Candidate rules: %s/%s", len(candidates), len(AUTO_ANCHOR_CANDIDATES))
+    specs = calibrate_anchor_family(benchmark, selection_config, logger, rows)
 
     pd.DataFrame(rows).to_csv(config.calibration_csv, index=False)
     logger.info("Calibration CSV: %s", config.calibration_csv)
@@ -1509,11 +1904,27 @@ def build_forecast_anchors(
 
 def run(config: AnchorConfig) -> dict[str, float | str]:
     warnings.filterwarnings("ignore")
+    if config.overwrite:
+        for artifact_path in (
+            config.output_csv,
+            config.checkpoint_csv,
+            config.detail_log_csv,
+            config.calibration_csv,
+            config.debug_log,
+        ):
+            artifact_path.unlink(missing_ok=True)
     logger = configure_logging(config.debug_log)
+    method_label = experiment_method_label(config)
+    variant = experiment_variant(config)
 
     logger.info("Run name: %s", config.run_name)
     logger.info("Dataset: %s", config.dataset_name)
     logger.info("Method: %s", config.anchor_method)
+    logger.info("Experiment method label: %s", method_label)
+    logger.info("Variant: %s", variant)
+    logger.info("Auto strategy: %s", config.auto_strategy)
+    logger.info("Candidate exclusions: %s", ",".join(config.candidate_exclusions) or "none")
+    logger.info("History perturbation: %s", config.history_perturbation)
     logger.info("Output directory: %s", config.output_dir)
     logger.info("Loading %s data through the APN pipeline...", config.dataset_name)
     load_start = time.time()
@@ -1574,6 +1985,14 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
             )
             if extracted is None:
                 continue
+            extracted = prepare_extracted_sample(
+                extracted=extracted,
+                benchmark=benchmark,
+                config=config,
+                variable_index=variable_index,
+                encoder_index=encoder_index,
+                sample_index=sample_index,
+            )
 
             history_scaled_values = extracted["history_scaled"]
             history_raw = extracted["history_raw"]
@@ -1581,6 +2000,7 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
             actual_scaled = extracted["actual_scaled"]
             actual_raw = extracted["actual_raw"]
             target_times = extracted["target_times"]
+            history_diag = extracted.get("history_diagnostics", {})
             n_forecast = len(actual_scaled)
             valid_sample_count += 1
             trace_sample = should_trace_sample(valid_sample_count, config)
@@ -1654,7 +2074,14 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
                 detail_rows.append(
                     {
                         "Dataset": benchmark.name,
-                        "Method": config.anchor_method,
+                        "Method": method_label,
+                        "Base_method": config.anchor_method,
+                        "Variant": variant,
+                        "Seq_len": config.seq_len,
+                        "Pred_len": config.pred_len,
+                        "Auto_strategy": config.auto_strategy,
+                        "Candidate_exclusions": ",".join(config.candidate_exclusions),
+                        "History_perturbation": config.history_perturbation,
                         "Variable": variable_name,
                         "Entity": sample_key,
                         "Step": step_index,
@@ -1670,6 +2097,13 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
                         "Anchor_rule": anchor.get("rule", ""),
                         "Anchor_method": anchor.get("method", ""),
                         "Anchor_shrink_beta": anchor.get("shrink_beta", ""),
+                        "History_n": round(float(history_diag.get("History_n", float("nan"))), 6),
+                        "History_span": round(float(history_diag.get("History_span", float("nan"))), 6),
+                        "History_density": round(float(history_diag.get("History_density", float("nan"))), 6),
+                        "History_last_gap": round(float(history_diag.get("History_last_gap", float("nan"))), 6),
+                        "History_median_gap": round(float(history_diag.get("History_median_gap", float("nan"))), 6),
+                        "History_volatility": round(float(history_diag.get("History_volatility", float("nan"))), 6),
+                        "History_mode_fraction": round(float(history_diag.get("History_mode_fraction", float("nan"))), 6),
                     }
                 )
                 total_predictions += 1
@@ -1717,7 +2151,14 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
         result_row = {
             "Dataset": benchmark.name,
             "Variable": variable_name,
-            "Method": config.anchor_method,
+            "Method": method_label,
+            "Base_method": config.anchor_method,
+            "Variant": variant,
+            "Seq_len": config.seq_len,
+            "Pred_len": config.pred_len,
+            "Auto_strategy": config.auto_strategy,
+            "Candidate_exclusions": ",".join(config.candidate_exclusions),
+            "History_perturbation": config.history_perturbation,
             "MAE_scaled": round(float(np.mean(mae_scaled)), 6),
             "MSE_scaled": round(float(np.mean(mse_scaled)), 6),
             "MAE_raw": round(float(np.mean(mae_raw)), 4),
@@ -1752,7 +2193,22 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
         logger.info("No results were produced.")
         return {
             "Dataset": benchmark.name,
-            "Method": config.anchor_method,
+            "Method": method_label,
+            "Base_method": config.anchor_method,
+            "Variant": variant,
+            "Seq_len": config.seq_len,
+            "Pred_len": config.pred_len,
+            "Auto_strategy": config.auto_strategy,
+            "Candidate_exclusions": ",".join(config.candidate_exclusions),
+            "History_perturbation": config.history_perturbation,
+            "Equal_variable_MAE_scaled": float("nan"),
+            "Equal_variable_MSE_scaled": float("nan"),
+            "Predictions": 0.0,
+            "Fallback": 0.0,
+            "Time_s": 0.0,
+            "CPU_Total_s": 0.0,
+            "CPU_ms_per_pred": float("nan"),
+            "CPU_pred_per_s": float("nan"),
             "MAE_scaled": float("nan"),
             "MSE_scaled": float("nan"),
         }
@@ -1793,6 +2249,12 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
     logger.info("Total predictions: %s", total_predictions)
     logger.info("Total fallbacks: %s", total_fallback)
     logger.info("Total time: %.1fs", total_elapsed)
+    cpu_ms_per_pred = (
+        1000.0 * total_elapsed / total_predictions if total_predictions else float("nan")
+    )
+    cpu_pred_per_s = total_predictions / total_elapsed if total_elapsed > 0 else float("nan")
+    logger.info("CPU ms/pred: %.4f", cpu_ms_per_pred)
+    logger.info("CPU pred/s: %.1f", cpu_pred_per_s)
 
     baseline = APN_BASELINES.get(benchmark.name)
     if baseline is not None and global_metrics is not None:
@@ -1813,12 +2275,22 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
 
     summary = {
         "Dataset": benchmark.name,
-        "Method": config.anchor_method,
+        "Method": method_label,
+        "Base_method": config.anchor_method,
+        "Variant": variant,
+        "Seq_len": config.seq_len,
+        "Pred_len": config.pred_len,
+        "Auto_strategy": config.auto_strategy,
+        "Candidate_exclusions": ",".join(config.candidate_exclusions),
+        "History_perturbation": config.history_perturbation,
         "Equal_variable_MAE_scaled": avg_mae,
         "Equal_variable_MSE_scaled": avg_mse,
         "Predictions": float(total_predictions),
         "Fallback": float(total_fallback),
         "Time_s": total_elapsed,
+        "CPU_Total_s": total_elapsed,
+        "CPU_ms_per_pred": cpu_ms_per_pred,
+        "CPU_pred_per_s": cpu_pred_per_s,
     }
     if global_metrics is not None:
         summary.update(

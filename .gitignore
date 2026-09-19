@@ -11,3 +11,20 @@ __pycache__/
 *.pyc 
 anchor_results/
 apn_model_runs/
+
+# Local datasets and generated experiment artifacts
+APN/data/physionet.org/
+APN/storage/
+APN/logs/
+anchor_results*/
+cross_baseline_results/
+reruns/
+
+# Large binary outputs/checkpoints
+*.pt
+*.pth
+*.pkl
+*.npy
+*.npz
+*.bin
+*.safetensors

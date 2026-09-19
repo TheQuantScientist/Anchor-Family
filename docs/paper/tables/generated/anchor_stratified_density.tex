@@ -1,0 +1,24 @@
+\begin{table*}[t]
+\caption{AutoAnchor and NaiveAnchor errors stratified by observation density. Positive MSE reduction favors AutoAnchor. Strata are dataset-specific target-level tertiles.}
+\label{tab:anchor-density-strata}
+\centering
+\scriptsize
+\begin{tabular}{llrrrrrr}
+\toprule
+Dataset & Stratum & Auto MAE & Naive MAE & Auto MSE & Naive MSE & MSE red. (\%) & Predictions \\
+\midrule
+P12 & low & 0.3544 & 0.3753 & 0.2985 & 0.3778 & +21.0 & 7,193 \\
+P12 & mid & 0.3760 & 0.4170 & 0.3066 & 0.4138 & +25.9 & 7,193 \\
+P12 & high & 0.3452 & 0.3930 & 0.3009 & 0.4060 & +25.9 & 7,193 \\
+MIMIC & low & 0.3642 & 0.3792 & 0.3207 & 0.4034 & +20.5 & 4,407 \\
+MIMIC & mid & 0.3822 & 0.3863 & 0.3786 & 0.4418 & +14.3 & 4,406 \\
+MIMIC & high & 0.3506 & 0.3470 & 0.4361 & 0.5232 & +16.6 & 4,407 \\
+USHCN & mid & 0.2236 & 0.2952 & 0.1832 & 0.3221 & +43.1 & 122 \\
+USHCN & low & 0.2565 & 0.3914 & 0.1781 & 0.4589 & +61.2 & 123 \\
+USHCN & high & 0.1760 & 0.3005 & 0.1084 & 0.3105 & +65.1 & 123 \\
+HumanActivity & mid & 0.1111 & 0.1174 & 0.0391 & 0.0527 & +25.8 & 1,970 \\
+HumanActivity & low & 0.1340 & 0.1392 & 0.0510 & 0.0757 & +32.6 & 1,970 \\
+HumanActivity & high & 0.0992 & 0.1110 & 0.0357 & 0.0531 & +32.7 & 1,970 \\
+\bottomrule
+\end{tabular}
+\end{table*}

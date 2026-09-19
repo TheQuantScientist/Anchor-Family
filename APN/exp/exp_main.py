@@ -564,9 +564,11 @@ class Exp_Main(Exp_Basic):
                 model_test = model_test.to(f"cuda:{self.configs.gpu_id}")
 
             # create folder for test results
-            subfolder_eval = f'eval_{datetime.datetime.now().strftime("%Y_%m%d_%H%M")}'
+            subfolder_eval = f'eval_{datetime.datetime.now().strftime("%Y_%m%d_%H%M%S_%f")}'
             folder_path = checkpoint_location_itr / subfolder_eval
             folder_path.mkdir(exist_ok=True)
+            with open(folder_path / "eval_configs.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(asdict(self.configs), f, default_flow_style=False)
             logger.info(f"Testing results will be saved under {folder_path}")
 
             # dictionary holding input and output data
@@ -647,3 +649,9 @@ class Exp_Main(Exp_Basic):
                 for tensor_name in output_tensor_names:
                     if array_dict[tensor_name] is not None:
                         np.save(folder_path / f"output_{tensor_name}.npy", array_dict[tensor_name])
+            elif self.configs.save_prediction_arrays:
+                for tensor_name in ["y", "y_mask", "sample_ID"]:
+                    if array_dict[tensor_name] is not None:
+                        np.save(folder_path / f"input_{tensor_name}.npy", array_dict[tensor_name])
+                if array_dict["pred"] is not None:
+                    np.save(folder_path / "output_pred.npy", array_dict["pred"])
