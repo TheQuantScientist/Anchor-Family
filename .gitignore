@@ -1,0 +1,48 @@
+apn_env/ 
+venv/ 
+/data/
+result/ 
+.venv/
+.env
+.env.local
+*.csv 
+*.log 
+__pycache__/ 
+*.pyc 
+anchor_results/
+upstream_model_runs/
+
+# Local datasets and generated experiment artifacts
+vendor/upstream_benchmark/data/physionet.org/
+vendor/upstream_benchmark/storage/
+vendor/upstream_benchmark/logs/
+anchor_results*/
+cross_baseline_results/
+reruns/
+
+# Large binary outputs/checkpoints
+*.pt
+*.pth
+*.pkl
+*.npy
+*.npz
+*.bin
+*.safetensors
+
+# Local backup/cache artifacts
+*.orig
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local paper/reference material not published in the code repo
+docs/
+ref/
+apn_benchmark_results.md
+upstream_benchmark_results.md
+plots*.py
+
+# Generated result prose/tables
+anchor_results*/

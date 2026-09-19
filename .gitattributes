@@ -1,0 +1,19 @@
+# Normalize text files across platforms.
+* text=auto eol=lf
+
+# Keep generated/binary assets out of text diffs.
+*.gz binary
+*.pt binary
+*.pth binary
+*.pkl binary
+*.npy binary
+*.npz binary
+*.bin binary
+*.safetensors binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+
+# Upstream benchmark code vendored for reproducibility.
+vendor/upstream_benchmark/** linguist-vendored
