@@ -22,12 +22,13 @@ from typing import Iterable
 import pandas as pd
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
-APN_ROOT = PROJECT_ROOT / "APN"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from chronolm.apn import APN_ROOT  # noqa: E402
+from chronolm.cli_utils import split_csv_values, unique_preserve_order  # noqa: E402
 from chronolm.experiments.anchor_baseline import AnchorConfig, run as run_anchor  # noqa: E402
 
 DATASET_ORDER = ["P12", "MIMIC", "USHCN", "HumanActivity"]
@@ -163,47 +164,37 @@ def parse_args() -> argparse.Namespace:
 
 
 def selected_suites(args: argparse.Namespace) -> list[str]:
-    raw = args.suite or ["all"]
+    raw = split_csv_values(args.suite, default=["all"])
     if "all" in raw:
         return ["lookback", "temporal", "sparsity", "paired", "seed", "efficiency"]
-    return list(dict.fromkeys(raw))
+    return unique_preserve_order(raw)
 
 
 def selected_datasets(args: argparse.Namespace) -> list[str]:
-    raw = args.dataset or ["all"]
+    raw = split_csv_values(args.dataset, default=["all"])
     if any(item.lower() == "all" for item in raw):
         values = DATASET_ORDER
     else:
-        values = []
-        for item in raw:
-            for part in item.split(","):
-                name = part.strip()
-                if name not in DATASETS:
-                    raise ValueError(f"Unsupported dataset {name!r}")
-                if name not in values:
-                    values.append(name)
+        for name in raw:
+            if name not in DATASETS:
+                raise ValueError(f"Unsupported dataset {name!r}")
+        values = unique_preserve_order(raw)
     return values[:1] if args.quick else values
 
 
 def selected_models(args: argparse.Namespace) -> list[str]:
-    raw = args.model or ["all"]
+    raw = split_csv_values(args.model, default=["all"])
     values: list[str] = []
-    for item in raw:
-        for part in item.split(","):
-            name = part.strip()
-            if name == "all":
-                for model in ALL_MODELS:
-                    if model not in values:
-                        values.append(model)
-            elif name == "neural":
-                for model in NEURAL_MODELS:
-                    if model not in values:
-                        values.append(model)
-            elif name in ALL_MODELS:
-                if name not in values:
-                    values.append(name)
-            else:
-                raise ValueError(f"Unsupported model {name!r}")
+    for name in raw:
+        if name == "all":
+            values.extend(ALL_MODELS)
+        elif name == "neural":
+            values.extend(NEURAL_MODELS)
+        elif name in ALL_MODELS:
+            values.append(name)
+        else:
+            raise ValueError(f"Unsupported model {name!r}")
+    values = unique_preserve_order(values)
     return values[:1] if args.quick else values
 
 
@@ -488,8 +479,6 @@ def run_neural_specs(specs: list[NeuralSpec], args: argparse.Namespace) -> list[
 
 
 def anchor_specs(args: argparse.Namespace) -> list[dict[str, object]]:
-
-
     suites = selected_suites(args)
     datasets = selected_datasets(args)
     models = selected_models(args)
@@ -565,7 +554,7 @@ def run_anchor_specs(args: argparse.Namespace) -> None:
         print(f"[anchor:{spec['Suite']}] AutoAnchor {spec['Dataset']} sl={spec['Seq_len']} pl={spec['Pred_len']} perturb={spec['History_perturbation']} keep={spec['History_keep_fraction']:g}")
         if args.dry_run:
             print("  " + " ".join([
-                sys.executable, "run_anchor_baseline.py", "--dataset", str(spec["Dataset"]), "--method", "AutoAnchor",
+                sys.executable, "scripts/experiments/run_anchor_baseline.py", "--dataset", str(spec["Dataset"]), "--method", "AutoAnchor",
                 "--seq-len", str(spec["Seq_len"]), "--pred-len", str(spec["Pred_len"]), "--history-perturbation", str(spec["History_perturbation"]),
                 "--history-keep-fraction", str(spec["History_keep_fraction"]), "--run-tag", run_tag,
             ]))

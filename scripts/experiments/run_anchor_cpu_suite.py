@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from chronolm.cli_utils import slugify, split_csv_values, unique_preserve_order  # noqa: E402
 from chronolm.experiments.anchor_baseline import (  # noqa: E402
     ANCHOR_FAMILY_METHODS,
     ANCHOR_METHOD_SLUGS,
@@ -88,33 +89,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def selected_suites(args: argparse.Namespace) -> list[str]:
-    raw = args.suite or ["all"]
+    raw = split_csv_values(args.suite, default=["all"])
     if "all" in raw:
         return ["family", "candidate", "temporal", "sweeps"]
-    return list(dict.fromkeys(raw))
+    return unique_preserve_order(raw)
 
 
 def selected_datasets(args: argparse.Namespace) -> list[str]:
-    raw = args.dataset or ["all"]
+    raw = split_csv_values(args.dataset, default=["all"])
     if any(value.lower() == "all" for value in raw):
         return DATASET_ORDER
-    datasets: list[str] = []
-    for value in raw:
-        for part in value.split(","):
-            dataset = canonical_dataset_name(part)
-            if dataset not in datasets:
-                datasets.append(dataset)
-    return datasets
-
-
-def slugify(value: str) -> str:
-    chars: list[str] = []
-    for char in value.lower():
-        if char.isalnum():
-            chars.append(char)
-        elif chars and chars[-1] != "_":
-            chars.append("_")
-    return "".join(chars).strip("_")
+    return unique_preserve_order(canonical_dataset_name(value) for value in raw)
 
 
 def config_for(

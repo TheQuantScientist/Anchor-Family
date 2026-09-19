@@ -8,5 +8,5 @@ Active code outside upstream APN is intentionally small:
 Run from the repository root:
 
 ```bash
-python run_anchor_baseline.py --dataset P12
+python scripts/experiments/run_anchor_baseline.py --dataset P12
 ```

@@ -28,3 +28,20 @@ reruns/
 *.npz
 *.bin
 *.safetensors
+
+# Local backup/cache artifacts
+*.orig
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local paper/reference material not published in the code repo
+docs/
+ref/
+apn_benchmark_results.md
+plots*.py
+
+# Generated result prose/tables
+anchor_results*/

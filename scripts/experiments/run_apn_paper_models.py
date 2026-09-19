@@ -13,12 +13,13 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from chronolm.apn import APN_ROOT
+from chronolm.cli_utils import expand_selection
 
 
 PAPER_MODELS = [
@@ -98,34 +99,6 @@ def parse_args() -> argparse.Namespace:
         help="Wrapper log directory. APN's own scripts still write APN/logs.",
     )
     return parser.parse_args()
-
-
-def expand_selection(
-    raw_values: list[str],
-    defaults: list[str],
-    aliases: dict[str, str],
-) -> list[str]:
-    if not raw_values:
-        return defaults
-
-    selected: list[str] = []
-    seen: set[str] = set()
-    for raw_value in raw_values:
-        for item in raw_value.split(","):
-            name = item.strip()
-            if not name:
-                continue
-            if name.lower() == "all":
-                for default in defaults:
-                    if default not in seen:
-                        seen.add(default)
-                        selected.append(default)
-                continue
-            canonical = aliases.get(name.lower(), name)
-            if canonical not in seen:
-                seen.add(canonical)
-                selected.append(canonical)
-    return selected
 
 
 def script_path(model: str, dataset: str) -> Path:

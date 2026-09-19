@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from chronolm.cli_utils import slugify, split_csv_values, unique_preserve_order
 from chronolm.experiments.anchor_baseline import (
     ANCHOR_FAMILY_METHODS,
     ANCHOR_METHOD_SLUGS,
@@ -139,32 +140,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def selected_datasets(args: argparse.Namespace) -> list[str]:
-    raw_names = args.dataset or []
-    if args.all or any(name.lower() == "all" for name in raw_names):
+    raw_names = split_csv_values(args.dataset)
+    if args.all or any(name.lower() == "all" for name in raw_names) or not raw_names:
         return DATASET_ORDER
-
-    if not raw_names:
-        return DATASET_ORDER
-
-    seen: set[str] = set()
-    datasets: list[str] = []
-    for raw_name in raw_names:
-        for part in raw_name.split(","):
-            dataset = canonical_dataset_name(part)
-            if dataset not in seen:
-                seen.add(dataset)
-                datasets.append(dataset)
-    return datasets
-
-
-def slugify(value: str) -> str:
-    cleaned = []
-    for char in value.strip().lower():
-        if char.isalnum():
-            cleaned.append(char)
-        elif cleaned and cleaned[-1] != "_":
-            cleaned.append("_")
-    return "".join(cleaned).strip("_")
+    return unique_preserve_order(canonical_dataset_name(name) for name in raw_names)
 
 
 def run_name_suffix(args: argparse.Namespace, method: str) -> str:
@@ -185,22 +164,12 @@ def run_name_suffix(args: argparse.Namespace, method: str) -> str:
 
 
 def selected_methods(args: argparse.Namespace) -> list[str]:
-    raw_names = args.method or []
+    raw_names = split_csv_values(args.method)
     if args.family or any(name.lower() in {"all", "family"} for name in raw_names):
         return list(ANCHOR_FAMILY_METHODS)
-
     if not raw_names:
         return ["AutoAnchor"]
-
-    seen: set[str] = set()
-    methods: list[str] = []
-    for raw_name in raw_names:
-        for part in raw_name.split(","):
-            method = canonical_anchor_method(part)
-            if method not in seen:
-                seen.add(method)
-                methods.append(method)
-    return methods
+    return unique_preserve_order(canonical_anchor_method(name) for name in raw_names)
 
 
 def main() -> None:

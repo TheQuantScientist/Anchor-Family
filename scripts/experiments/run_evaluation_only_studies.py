@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,7 +81,7 @@ def main() -> None:
 
     cross_command = [
         python,
-        str(PROJECT_ROOT / "run_cross_baseline_suite.py"),
+        str(PROJECT_ROOT / "scripts/experiments/run_cross_baseline_suite.py"),
         "--suite",
         "temporal",
         "--suite",
@@ -115,7 +115,7 @@ def main() -> None:
 
     mimic_candidate_command = [
         python,
-        str(PROJECT_ROOT / "run_anchor_cpu_suite.py"),
+        str(PROJECT_ROOT / "scripts/experiments/run_anchor_cpu_suite.py"),
         "--suite",
         "candidate",
         "--dataset",

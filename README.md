@@ -4,23 +4,30 @@ ChronoLM is now a compact benchmark workspace for asking a sharper question:
 how far can simple history anchors go on irregular multivariate time-series
 forecasting when evaluated with the same APN data splits and scaled metrics?
 
-The upstream APN repository is kept under `APN/` and remains the source of truth
-for trained APN and paper-baseline model settings. ChronoLM code outside that
-folder only contains our anchor-family runner and orchestration utilities.
+ChronoLM's code lives under `src/chronolm` and `scripts`. The `APN/` directory
+is vendored upstream benchmark code used for reproducible APN data loaders,
+models, and baseline settings; it is marked as vendored in GitHub metadata so the
+repository presents as ChronoLM rather than as an APN fork.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `APN/` | Upstream APN implementation, datasets, configs, and model scripts. |
+| `src/chronolm/` | ChronoLM package code. |
 | `src/chronolm/experiments/anchor_baseline.py` | Anchor-family runner using APN data loaders and metrics. |
-| `run_anchor_baseline.py` | Root-level launcher for anchor runs on P12, USHCN, and HumanActivity. |
-| `run_apn_paper_models.py` | Root-level wrapper for APN paper model scripts. |
+| `scripts/experiments/` | Experiment orchestration entry points. |
+| `scripts/check_repo_ready.py` | Pre-push check for large tracked or nonignored files. |
 | `scripts/compute_global_metrics.py` | Utility for APN-style global MAE/MSE from detail logs. |
-| `docs/auto_anchor.md` | Method note, current results, and ICLR-grade ablation checklist. |
-| `apn_benchmark_results.md` | Current paper-table results with our AutoAnchor row. |
+| `APN/` | Vendored upstream APN benchmark code required for reproducibility. |
 
-Generated logs, CSVs, checkpoints, and local environments are ignored by git.
+Generated logs, CSVs, checkpoints, local datasets, local environments,
+reference PDFs, paper drafts, docs, and checkpoint arrays are ignored by git. Before pushing, run:
+
+```bash
+python scripts/check_repo_ready.py
+```
+
+This fails if any tracked or nonignored file larger than 25 MB is visible to git.
 
 ## Setup
 
@@ -29,8 +36,9 @@ APN recommends Python 3.11.13 and PyTorch 2.6.0+cu124.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r APN/requirements.txt
-pip install -e .
+pip install -e .[apn]
+# or, if you prefer the pinned compatibility file:
+# pip install -r requirements.txt && pip install -e .
 ```
 
 Public datasets are prepared by APN on first use:
@@ -49,34 +57,34 @@ MIMIC requires credentialed access. Follow `APN/README.md` and place
 Run the headline AutoAnchor method on all currently supported anchor datasets:
 
 ```bash
-python run_anchor_baseline.py --all
+python scripts/experiments/run_anchor_baseline.py --all
 ```
 
 Run one dataset:
 
 ```bash
-python run_anchor_baseline.py --dataset P12
-python run_anchor_baseline.py --dataset USHCN
-python run_anchor_baseline.py --dataset HumanActivity
+python scripts/experiments/run_anchor_baseline.py --dataset P12
+python scripts/experiments/run_anchor_baseline.py --dataset USHCN
+python scripts/experiments/run_anchor_baseline.py --dataset HumanActivity
 ```
 
 Run the full anchor family for ablation:
 
 ```bash
-python run_anchor_baseline.py --all --family
+python scripts/experiments/run_anchor_baseline.py --all --family
 ```
 
 Run selected family members:
 
 ```bash
-python run_anchor_baseline.py --dataset USHCN --method NaiveAnchor --method AutoAnchor
-python run_anchor_baseline.py --dataset P12 --method ERMAnchor
+python scripts/experiments/run_anchor_baseline.py --dataset USHCN --method NaiveAnchor --method AutoAnchor
+python scripts/experiments/run_anchor_baseline.py --dataset P12 --method ERMAnchor
 ```
 
 Cheap smoke test:
 
 ```bash
-python run_anchor_baseline.py --dataset USHCN --max-test-samples 20 --trace-every 5
+python scripts/experiments/run_anchor_baseline.py --dataset USHCN --max-test-samples 20 --trace-every 5
 ```
 
 Outputs go under `anchor_results/<dataset>/` and include:
@@ -112,25 +120,25 @@ python scripts/compute_global_metrics.py anchor_results/p12/anchor_family_auto_a
 List the APN paper-script matrix:
 
 ```bash
-python run_apn_paper_models.py --list
+python scripts/experiments/run_apn_paper_models.py --list
 ```
 
 Dry-run the exact APN commands from the root:
 
 ```bash
-python run_apn_paper_models.py --model APN --dataset P12
+python scripts/experiments/run_apn_paper_models.py --model APN --dataset P12
 ```
 
 Execute a script:
 
 ```bash
-python run_apn_paper_models.py --model APN --dataset P12 --execute
+python scripts/experiments/run_apn_paper_models.py --model APN --dataset P12 --execute
 ```
 
 Run every paper-table model on the public datasets:
 
 ```bash
-python run_apn_paper_models.py \
+python scripts/experiments/run_apn_paper_models.py \
   --dataset HumanActivity,USHCN,P12 \
   --execute \
   --continue-on-error
