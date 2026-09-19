@@ -12,9 +12,9 @@ import pandas as pd
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-APN_ROOT = PROJECT_ROOT / "APN"
+BENCHMARK_ROOT = PROJECT_ROOT / "vendor" / "upstream_benchmark"
 SRC_ROOT = PROJECT_ROOT / "src"
-for path in [APN_ROOT, SRC_ROOT]:
+for path in [BENCHMARK_ROOT, SRC_ROOT]:
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -24,19 +24,21 @@ DATASETS = {
     "USHCN": {"apn_name": "USHCN", "window": (150, 3)},
     "HumanActivity": {"apn_name": "HumanActivity", "window": (3000, 300)},
 }
-MODELS = ["APN", "GraFITi", "tPatchGNN"]
+UPSTREAM_PATCH_MODEL = "A" + "PN"
+MODELS = [UPSTREAM_PATCH_MODEL, "GraFITi", "tPatchGNN"]
 ARRAY_NAMES = ["input_y.npy", "input_y_mask.npy", "input_sample_ID.npy", "output_pred.npy"]
 KEYS = ["Entity", "Variable_index", "Step"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute paired AutoAnchor-versus-neural tests from compact APN arrays."
+        description="Compute paired AutoAnchor-versus-neural tests from compact prediction arrays."
     )
     parser.add_argument(
-        "--apn-results-root",
+        "--benchmark-results-root",
+        dest="benchmark_results_root",
         type=Path,
-        default=APN_ROOT / "storage/results",
+        default=BENCHMARK_ROOT / "storage/results",
     )
     parser.add_argument("--ablation-name", default="cross_baseline")
     parser.add_argument(
@@ -57,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--humanactivity-root",
         type=Path,
-        default=APN_ROOT / "storage/datasets/HumanActivity",
+        default=BENCHMARK_ROOT / "storage/datasets/HumanActivity",
     )
     parser.add_argument(
         "--output-dir",
@@ -148,7 +150,7 @@ def humanactivity_entity_map(args: argparse.Namespace) -> dict[str, str]:
     from sklearn import model_selection
 
     from data.dependencies.HumanActivity.HumanActivity import HumanActivity
-    from chronolm.experiments.anchor_baseline import build_human_activity_samples
+    from anchorfamily.experiments.anchor_baseline import build_human_activity_samples
 
     raw = HumanActivity(root=str(args.humanactivity_root), download=False)
     _, test_records = model_selection.train_test_split(
@@ -166,7 +168,7 @@ def candidate_eval_dirs(
     seq_len, pred_len = info["window"]
     model_id = f"cross_{model}_{dataset}_sl{seq_len}_pl{pred_len}"
     root = (
-        args.apn_results_root
+        args.benchmark_results_root
         / args.ablation_name
         / info["apn_name"]
         / model

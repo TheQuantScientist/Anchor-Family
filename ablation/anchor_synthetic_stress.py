@@ -14,7 +14,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chronolm.experiments.anchor_baseline import (  # noqa: E402
+from anchorfamily.experiments.anchor_baseline import (  # noqa: E402
     AUTO_ANCHOR_CANDIDATES,
     AUTO_ANCHOR_BY_NAME,
     AnchorCandidate,

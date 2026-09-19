@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         "--metric-mode",
         choices=sorted(METRIC_COLUMNS),
         default="global",
-        help="Use APN-style global metrics or equal-variable averages.",
+        help="Use benchmark-style global metrics or equal-variable averages.",
     )
     return parser.parse_args()
 

@@ -10,12 +10,12 @@ result/
 __pycache__/ 
 *.pyc 
 anchor_results/
-apn_model_runs/
+upstream_model_runs/
 
 # Local datasets and generated experiment artifacts
-APN/data/physionet.org/
-APN/storage/
-APN/logs/
+vendor/upstream_benchmark/data/physionet.org/
+vendor/upstream_benchmark/storage/
+vendor/upstream_benchmark/logs/
 anchor_results*/
 cross_baseline_results/
 reruns/
@@ -41,6 +41,7 @@ dist/
 docs/
 ref/
 apn_benchmark_results.md
+upstream_benchmark_results.md
 plots*.py
 
 # Generated result prose/tables

@@ -14,4 +14,4 @@ jobs:
           python-version: "3.11"
       - name: Compile project Python files
         run: |
-          python -m compileall -q src scripts/experiments/run_anchor_baseline.py scripts/experiments/run_anchor_cpu_suite.py scripts/experiments/run_apn_paper_models.py scripts/experiments/run_cross_baseline_suite.py scripts/experiments/run_evaluation_only_studies.py ablation scripts
+          python -m compileall -q src scripts/experiments/run_anchor_baseline.py scripts/experiments/run_anchor_cpu_suite.py scripts/experiments/run_upstream_paper_models.py scripts/experiments/run_cross_baseline_suite.py scripts/experiments/run_evaluation_only_studies.py ablation scripts

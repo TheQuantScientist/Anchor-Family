@@ -15,5 +15,5 @@
 *.jpeg binary
 *.pdf binary
 
-# APN is upstream benchmark code vendored for reproducibility.
-APN/** linguist-vendored
+# Upstream benchmark code vendored for reproducibility.
+vendor/upstream_benchmark/** linguist-vendored

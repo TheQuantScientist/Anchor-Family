@@ -1,4 +1,4 @@
-"""Small CLI parsing helpers shared by ChronoLM runner scripts."""
+"""Small CLI parsing helpers shared by AnchorFamily runner scripts."""
 
 from __future__ import annotations
 

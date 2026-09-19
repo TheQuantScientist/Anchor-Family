@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the APN/tsdm MIMIC-III De Brouwer complete_tensor.csv.
+"""Build the benchmark/tsdm MIMIC-III De Brouwer complete_tensor.csv.
 
 This runner executes the official GRU-ODE-Bayes MIMIC preprocessing notebooks
 headlessly, with two local patches:
@@ -8,7 +8,7 @@ headlessly, with two local patches:
    MIMIC-III v1.4 dump.
 2. Old pandas ``DataFrame.append`` calls are shimmed for pandas >= 2.
 
-The APN loader expects the modified 30-minute binning used by tsdm/APN, so the
+The benchmark loader expects the modified 30-minute binning used by tsdm benchmark, so the
 DataMerging aggregation is run with ``bin_k=2`` and the resulting CSV is
 validated before being copied into ~/.tsdm/rawdata/MIMIC_III_DeBrouwer2019.
 """
@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     return argparse.ArgumentParser(description=__doc__).parse_args(
         namespace=SimpleNamespace(
             repo=qa_root / "gru_ode_bayes",
-            raw_dir=project / "APN" / "data" / "physionet.org" / "files" / "mimiciii" / "1.4",
+            raw_dir=project / "vendor" / "upstream_benchmark" / "data" / "physionet.org" / "files" / "mimiciii" / "1.4",
             work_dir=qa_root / "mimic_debrouwer_work",
             target_dir=Path.home() / ".tsdm" / "rawdata" / "MIMIC_III_DeBrouwer2019",
             seed=432,
@@ -87,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--raw-dir",
         type=Path,
-        default=project / "APN" / "data" / "physionet.org" / "files" / "mimiciii" / "1.4",
+        default=project / "vendor" / "upstream_benchmark" / "data" / "physionet.org" / "files" / "mimiciii" / "1.4",
     )
     parser.add_argument("--work-dir", type=Path, default=qa_root / "mimic_debrouwer_work")
     parser.add_argument(
@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-shape-mismatch",
         action="store_true",
-        help="Copy the CSV even if it does not match the APN/tsdm expected shape.",
+        help="Copy the CSV even if it does not match the benchmark/tsdm expected shape.",
     )
     return parser
 
@@ -325,7 +325,7 @@ def validate_and_install(path: Path, target_dir: Path, *, allow_shape_mismatch: 
 
     if df.shape != EXPECTED_SHAPE and not allow_shape_mismatch:
         raise ValueError(
-            f"Shape {df.shape} does not match APN/tsdm expected {EXPECTED_SHAPE}. "
+            f"Shape {df.shape} does not match benchmark/tsdm expected {EXPECTED_SHAPE}. "
             "Not installing into ~/.tsdm. Re-run with --allow-shape-mismatch only for debugging."
         )
 
@@ -339,7 +339,7 @@ def main() -> int:
     raise SystemExit(
         "Deprecated: use scripts/run_pyomnits_mimic_preprocess.sh instead. "
         "The maintained PyOmniTS preprocessing script includes checksum validation "
-        "for APN/tsdm MIMIC_III_DeBrouwer2019."
+        "for benchmark/tsdm MIMIC_III_DeBrouwer2019."
     )
 
 

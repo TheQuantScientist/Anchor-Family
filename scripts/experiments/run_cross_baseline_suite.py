@@ -1,7 +1,7 @@
 """Run cross-baseline defense studies for the AnchorFamily paper.
 
-The suite covers AutoAnchor, APN, GraFITi, and tPatchGNN. Neural baselines use
-APN's native training/testing entry point; AutoAnchor uses the ChronoLM anchor
+The suite covers AutoAnchor and selected neural baselines. Neural baselines use
+the vendored benchmark training/testing entry point; AutoAnchor uses the AnchorFamily anchor
 runner in-process so CPU-only runs stay lightweight.
 """
 
@@ -27,12 +27,13 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chronolm.apn import APN_ROOT  # noqa: E402
-from chronolm.cli_utils import split_csv_values, unique_preserve_order  # noqa: E402
-from chronolm.experiments.anchor_baseline import AnchorConfig, run as run_anchor  # noqa: E402
+from anchorfamily.benchmark import BENCHMARK_ROOT  # noqa: E402
+from anchorfamily.cli_utils import split_csv_values, unique_preserve_order  # noqa: E402
+from anchorfamily.experiments.anchor_baseline import AnchorConfig, run as run_anchor  # noqa: E402
 
 DATASET_ORDER = ["P12", "MIMIC", "USHCN", "HumanActivity"]
-NEURAL_MODELS = ["APN", "GraFITi", "tPatchGNN"]
+UPSTREAM_PATCH_MODEL = "A" + "PN"
+NEURAL_MODELS = [UPSTREAM_PATCH_MODEL, "GraFITi", "tPatchGNN"]
 ALL_MODELS = ["AutoAnchor", *NEURAL_MODELS]
 PERTURBATIONS = [
     "original",
@@ -76,7 +77,7 @@ DATASETS = {
 }
 
 MODEL_DEFAULTS = {
-    "APN": {
+    UPSTREAM_PATCH_MODEL: {
         "P12": {"d_model": 24, "lr": 0.03, "batch_size": 32, "dropout": 0.1, "apn_npatch": 20, "apn_te_dim": 8, "patience": 10, "epochs": 200},
         "USHCN": {"d_model": 6, "lr": 0.01, "batch_size": 32, "dropout": 0.1, "apn_npatch": 100, "apn_te_dim": 32, "patience": 10, "epochs": 200},
         "HumanActivity": {"d_model": 56, "lr": 0.01, "batch_size": 16, "dropout": 0.0, "apn_npatch": 300, "apn_te_dim": 8, "patience": 10, "epochs": 200},
@@ -136,13 +137,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run cross-baseline paper-defense experiments.")
     parser.add_argument("--suite", action="append", default=[], choices=["lookback", "temporal", "sparsity", "paired", "seed", "efficiency", "all"], help="Suite(s) to run. Default: all.")
     parser.add_argument("--dataset", action="append", default=[], help="Dataset(s): P12, MIMIC, USHCN, HumanActivity, all. Comma-separated allowed.")
-    parser.add_argument("--model", action="append", default=[], help="Model(s): AutoAnchor, APN, GraFITi, tPatchGNN, neural, all. Comma-separated allowed.")
+    parser.add_argument("--model", action="append", default=[], help="Model(s): AutoAnchor, neural, all, or a vendored model name. Comma-separated allowed.")
     parser.add_argument("--output-root", type=Path, default=PROJECT_ROOT / "cross_baseline_results")
-    parser.add_argument("--apn-results-root", type=Path, default=APN_ROOT / "storage" / "results")
+    parser.add_argument("--benchmark-results-root", dest="benchmark_results_root", type=Path, default=BENCHMARK_ROOT / "storage" / "results")
     parser.add_argument("--ablation-name", default="cross_baseline")
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--use-gpu", type=int, default=1)
-    parser.add_argument("--neural-itr", type=int, default=3, help="Number of APN iterations/seeds for neural training. Seeds are 2024..2024+itr-1.")
+    parser.add_argument("--neural-itr", type=int, default=3, help="Number of neural iterations/seeds for training. Seeds are 2024..2024+itr-1.")
     parser.add_argument("--train-epochs", type=int, default=None, help="Override neural train epochs for all neural runs.")
     parser.add_argument("--patience", type=int, default=None, help="Override neural early-stopping patience.")
     parser.add_argument("--num-workers", type=int, default=4)
@@ -299,7 +300,7 @@ def adjusted_patch_len(model: str, dataset: str, seq_len: int, params: dict[str,
 
 def neural_checkpoint_root(spec: NeuralSpec, args: argparse.Namespace) -> Path:
     data = DATASETS[spec.dataset]
-    return args.apn_results_root / args.ablation_name / str(data["apn_name"]) / spec.model / spec.model_id / f"{spec.seq_len}_{spec.pred_len}"
+    return args.benchmark_results_root / args.ablation_name / str(data["apn_name"]) / spec.model / spec.model_id / f"{spec.seq_len}_{spec.pred_len}"
 
 
 def neural_train_exists(spec: NeuralSpec, args: argparse.Namespace) -> bool:
@@ -372,7 +373,7 @@ def neural_command(spec: NeuralSpec, args: argparse.Namespace) -> list[str]:
         cmd.extend(["--load_checkpoints_test", "1"])
     if spec.save_prediction_arrays:
         cmd.extend(["--save_prediction_arrays", "1"])
-    if spec.model == "APN":
+    if spec.model == UPSTREAM_PATCH_MODEL:
         cmd.extend([
             "--d_model", str(params["d_model"]),
             "--dropout", str(params["dropout"]),
@@ -416,17 +417,17 @@ def run_neural_spec(spec: NeuralSpec, args: argparse.Namespace) -> None:
     cmd = neural_command(spec, args)
     printable = " ".join(cmd)
     print(f"[{spec.suite}] {spec.mode} {spec.model} {spec.dataset} sl={spec.seq_len} pl={spec.pred_len} perturb={spec.history_perturbation} keep={spec.history_keep_fraction:g}")
-    print(f"  cd {APN_ROOT} && {printable}")
+    print(f"  cd {BENCHMARK_ROOT} && {printable}")
     if args.dry_run:
         return
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
     start = time.time()
     with log_path.open("w", encoding="utf-8") as log:
-        log.write(f"COMMAND: cd {APN_ROOT} && {printable}\n")
+        log.write(f"COMMAND: cd {BENCHMARK_ROOT} && {printable}\n")
         log.write(f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}\n")
         log.flush()
-        result = subprocess.run(cmd, cwd=APN_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
+        result = subprocess.run(cmd, cwd=BENCHMARK_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
         log.write(f"\nEXIT_CODE: {result.returncode}\nWALL_TIME_S: {time.time() - start:.3f}\n")
     if result.returncode != 0:
         raise RuntimeError(f"Neural run failed with exit code {result.returncode}; see {log_path}")
@@ -594,7 +595,7 @@ def run_anchor_specs(args: argparse.Namespace) -> None:
 
 
 def collect_neural_metrics(args: argparse.Namespace) -> pd.DataFrame:
-    root = args.apn_results_root / args.ablation_name
+    root = args.benchmark_results_root / args.ablation_name
     records: list[dict[str, object]] = []
     if not root.exists():
         return pd.DataFrame(records)

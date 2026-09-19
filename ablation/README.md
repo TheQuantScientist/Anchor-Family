@@ -17,7 +17,7 @@ writes:
 - `anchor_family_ladder.md`: readable Markdown table.
 - `anchor_family_ladder.tex`: main-manuscript LaTeX table.
 
-By default, the script uses APN-style global masked metrics. To use equal-variable
+By default, the script uses benchmark-style global masked metrics. To use equal-variable
 averages instead:
 
 ```bash

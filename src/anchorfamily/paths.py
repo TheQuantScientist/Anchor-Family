@@ -1,4 +1,4 @@
-"""Repository path helpers used by ChronoLM scripts and packages."""
+"""Repository path helpers used by AnchorFamily scripts and packages."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
-APN_ROOT = PROJECT_ROOT / "APN"
+BENCHMARK_ROOT = PROJECT_ROOT / "vendor" / "upstream_benchmark"
 
 
 def add_to_sys_path(path: Path, *, prepend: bool = True) -> None:
@@ -27,6 +27,6 @@ def add_src_to_path() -> None:
     add_to_sys_path(SRC_ROOT)
 
 
-def add_apn_to_path() -> None:
-    """Make vendored APN imports available without changing directories."""
-    add_to_sys_path(APN_ROOT)
+def add_benchmark_to_path() -> None:
+    """Make vendored benchmark imports available without changing directories."""
+    add_to_sys_path(BENCHMARK_ROOT)

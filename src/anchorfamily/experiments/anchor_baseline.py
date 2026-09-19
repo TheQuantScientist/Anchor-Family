@@ -1,4 +1,4 @@
-"""AutoAnchor baselines on APN irregular time-series benchmark splits."""
+"""AutoAnchor baselines on irregular time-series benchmark splits."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
 
-from chronolm.apn import APN_ROOT, add_apn_to_path
+from anchorfamily.benchmark import BENCHMARK_ROOT, add_benchmark_to_path
 
-add_apn_to_path()
+add_benchmark_to_path()
 
 
-# APN protocol metadata. These values define the public benchmark windows;
+# benchmark protocol metadata. These values define the public benchmark windows;
 # they are not AutoAnchor tuning knobs.
 DATASET_DEFAULTS = {
     "P12": {"seq_len": 36, "pred_len": 3, "display_name": "PhysioNet P12"},
@@ -724,8 +724,8 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
     if config.dataset_name == "P12":
         from data.dependencies.tsdm.tasks.P12 import Physionet2012
 
-        # Match APN/data/data_provider/datasets/P12.py. The task includes times
-        # at the observation boundary, so APN subtracts half a sampling step.
+        # Match vendor/upstream_benchmark/data/data_provider/datasets/P12.py. The task includes times
+        # at the observation boundary, so the benchmark subtracts half a sampling step.
         task = Physionet2012(
             seq_len=float(config.seq_len) - 0.5,
             pred_len=config.pred_len,
@@ -773,7 +773,7 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
             MIMIC_III_DeBrouwer2019,
         )
 
-        # Match APN/data/data_provider/datasets/MIMIC_III.py exactly. APN passes
+        # Match vendor/upstream_benchmark/data/data_provider/datasets/MIMIC_III.py exactly. the benchmark passes
         # seq_len - 0.5 because the observation boundary is inclusive.
         task = MIMIC_III_DeBrouwer2019(
             seq_len=float(config.seq_len) - 0.5,
@@ -812,7 +812,7 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
             scaled_to_raw=lambda value, index: float(value * scale[index] + offset[index]),
             raw_to_scaled=lambda value, index: float((value - offset[index]) / scale[index]),
             # The task normalizes its 96 half-hour bins to [0, 1]. Convert back
-            # to APN sequence steps so phase periods and seq_len share units.
+            # to benchmark sequence steps so phase periods and seq_len share units.
             time_to_prompt=lambda value: value * 96.0,
             format_timestamp=lambda value: hours_to_timestamp(value / 2.0),
             format_tail_time=lambda value: f"{value / 2.0:.2f}h",
@@ -862,7 +862,7 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
         dataset_root = Path(
             os.getenv(
                 "CHRONOLM_HUMANACTIVITY_ROOT",
-                str(APN_ROOT / "storage" / "datasets" / "HumanActivity"),
+                str(BENCHMARK_ROOT / "storage" / "datasets" / "HumanActivity"),
             )
         )
         processed_path = dataset_root / "processed" / "data.pt"
@@ -916,7 +916,7 @@ def load_benchmark_data(config: AnchorConfig) -> BenchmarkData:
             time_to_prompt=lambda value: value,
             format_timestamp=lambda value: f"{value:.0f} ms",
             format_tail_time=lambda value: f"{value:.0f}ms",
-            time_unit="milliseconds inside the APN HumanActivity activity window",
+            time_unit="milliseconds inside the benchmark HumanActivity activity window",
             entity_label="activity_window",
         )
 
@@ -1412,7 +1412,7 @@ def choose_structural_prior_method(
 ) -> tuple[str, str] | None:
     """Choose a dataset-agnostic history prior before looking at test labels.
 
-    The rule uses only observed history statistics and APN protocol window
+    The rule uses only observed history statistics and benchmark protocol window
     lengths. It deliberately does not branch on dataset or variable names.
     """
     stats = variable_history_statistics(samples)
@@ -1591,7 +1591,7 @@ def select_erm_spec(
                 source="non_test_empirical_risk",
                 rationale=(
                     "shared anchor library; beta and candidate selected by "
-                    "pooled APN train+validation scaled MSE"
+                    "pooled benchmark train+validation scaled MSE"
                 ),
                 fit_samples=fit_samples,
                 validation_samples=validation_samples,
@@ -1926,7 +1926,7 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
     logger.info("Candidate exclusions: %s", ",".join(config.candidate_exclusions) or "none")
     logger.info("History perturbation: %s", config.history_perturbation)
     logger.info("Output directory: %s", config.output_dir)
-    logger.info("Loading %s data through the APN pipeline...", config.dataset_name)
+    logger.info("Loading %s data through the benchmark pipeline...", config.dataset_name)
     load_start = time.time()
     benchmark = load_benchmark_data(config)
     columns = benchmark.columns
@@ -2244,8 +2244,8 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
     logger.info("Equal-variable MAE_scaled: %.6f", avg_mae)
     logger.info("Equal-variable MSE_scaled: %.6f", avg_mse)
     if global_metrics is not None:
-        logger.info("APN-style global MAE_scaled: %.6f", global_metrics["MAE_scaled"])
-        logger.info("APN-style global MSE_scaled: %.6f", global_metrics["MSE_scaled"])
+        logger.info("benchmark-style global MAE_scaled: %.6f", global_metrics["MAE_scaled"])
+        logger.info("benchmark-style global MSE_scaled: %.6f", global_metrics["MSE_scaled"])
     logger.info("Total predictions: %s", total_predictions)
     logger.info("Total fallbacks: %s", total_fallback)
     logger.info("Total time: %.1fs", total_elapsed)
@@ -2260,14 +2260,14 @@ def run(config: AnchorConfig) -> dict[str, float | str]:
     if baseline is not None and global_metrics is not None:
         mae_delta = baseline["MAE"] - global_metrics["MAE_scaled"]
         mse_delta = baseline["MSE"] - global_metrics["MSE_scaled"]
-        logger.info("APN paper baseline: MAE=%.4f, MSE=%.4f", baseline["MAE"], baseline["MSE"])
+        logger.info("upstream paper baseline: MAE=%.4f, MSE=%.4f", baseline["MAE"], baseline["MSE"])
         logger.info(
             "%s comparison result: MAE=%.4f, MSE=%.4f",
             config.anchor_method,
             global_metrics["MAE_scaled"],
             global_metrics["MSE_scaled"],
         )
-        logger.info("%s delta vs APN: MAE=%+.4f, MSE=%+.4f", benchmark.name, mae_delta, mse_delta)
+        logger.info("%s delta vs upstream baseline: MAE=%+.4f, MSE=%+.4f", benchmark.name, mae_delta, mse_delta)
 
     logger.info("Output CSV: %s", config.output_csv)
     logger.info("Detail log CSV: %s", config.detail_log_csv)

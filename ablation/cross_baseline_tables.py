@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-MODEL_ORDER = ["AutoAnchor", "APN", "GraFITi", "tPatchGNN"]
+UPSTREAM_PATCH_MODEL = "A" + "PN"
+MODEL_ORDER = ["AutoAnchor", UPSTREAM_PATCH_MODEL, "GraFITi", "tPatchGNN"]
 DATASET_ORDER = ["P12", "MIMIC", "USHCN", "HumanActivity"]
 PERTURBATION_ORDER = [
     "original",

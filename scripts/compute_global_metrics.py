@@ -1,4 +1,4 @@
-"""Compute APN-style global metrics from a ChronoLM detail log."""
+"""Compute benchmark-style global metrics from a AnchorFamily detail log."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute global masked MAE/MSE from a ChronoLM detail CSV."
+        description="Compute global masked MAE/MSE from a AnchorFamily detail CSV."
     )
     parser.add_argument(
         "detail_csv",
@@ -56,7 +56,7 @@ def main() -> None:
         print(f"Dataset: {detail['Dataset'].iloc[0]}")
     print(f"Valid target points: {len(detail):,}")
     print()
-    print("APN-style global masked metrics:")
+    print("benchmark-style global masked metrics:")
     print(f"  MAE_scaled = {global_mae:.6f}")
     print(f"  MSE_scaled = {global_mse:.6f}")
     print()

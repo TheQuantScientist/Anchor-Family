@@ -15,8 +15,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chronolm.cli_utils import slugify, split_csv_values, unique_preserve_order  # noqa: E402
-from chronolm.experiments.anchor_baseline import (  # noqa: E402
+from anchorfamily.cli_utils import slugify, split_csv_values, unique_preserve_order  # noqa: E402
+from anchorfamily.experiments.anchor_baseline import (  # noqa: E402
     ANCHOR_FAMILY_METHODS,
     ANCHOR_METHOD_SLUGS,
     DATASET_DEFAULTS,

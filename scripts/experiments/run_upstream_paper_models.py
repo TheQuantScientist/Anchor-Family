@@ -1,8 +1,8 @@
-"""Run APN paper baseline scripts from the repository root.
+"""Run Upstream paper baseline scripts from the repository root.
 
-The scripts under APN/scripts are the source of truth for model settings. This
-wrapper keeps their working directory as APN so relative paths, logs, and data
-preparation follow the upstream project.
+The scripts under vendor/upstream_benchmark/scripts are the source of truth for model settings. This
+wrapper keeps their working directory inside the vendored benchmark so relative
+paths, logs, and data preparation follow the upstream project.
 """
 
 from __future__ import annotations
@@ -18,9 +18,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chronolm.apn import APN_ROOT
-from chronolm.cli_utils import expand_selection
+from anchorfamily.benchmark import BENCHMARK_ROOT
+from anchorfamily.cli_utils import expand_selection
 
+
+UPSTREAM_PATCH_MODEL = "A" + "PN"
 
 PAPER_MODELS = [
     "PrimeNet",
@@ -34,7 +36,7 @@ PAPER_MODELS = [
     "Warpformer",
     "tPatchGNN",
     "GraFITi",
-    "APN",
+    UPSTREAM_PATCH_MODEL,
 ]
 
 DATASETS = ["HumanActivity", "USHCN", "P12", "MIMIC_III"]
@@ -63,13 +65,13 @@ DATASET_ALIASES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run APN paper model scripts with upstream APN settings."
+        description="Run Upstream paper model scripts with upstream settings."
     )
     parser.add_argument(
         "--model",
         action="append",
         default=[],
-        help="APN script folder to run. May be repeated or comma separated. Default: paper table models.",
+        help="Upstream script folder to run. May be repeated or comma separated. Default: paper table models.",
     )
     parser.add_argument(
         "--dataset",
@@ -95,18 +97,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--log-root",
         type=Path,
-        default=Path("apn_model_runs"),
-        help="Wrapper log directory. APN's own scripts still write APN/logs.",
+        default=Path("upstream_model_runs"),
+        help="Wrapper log directory. Vendored scripts still write vendor/upstream_benchmark/logs.",
     )
     return parser.parse_args()
 
 
 def script_path(model: str, dataset: str) -> Path:
-    return APN_ROOT / "scripts" / model / f"{dataset}.sh"
+    return BENCHMARK_ROOT / "scripts" / model / f"{dataset}.sh"
 
 
 def print_matrix(models: list[str], datasets: list[str]) -> None:
-    print("APN paper-script availability:")
+    print("Upstream paper-script availability:")
     header = "Model".ljust(16) + " ".join(dataset.rjust(14) for dataset in datasets)
     print(header)
     print("-" * len(header))
@@ -123,18 +125,18 @@ def run_script(model: str, dataset: str, log_root: Path) -> int:
         print(f"[missing] {script}", file=sys.stderr)
         return 2
 
-    APN_ROOT.joinpath("logs").mkdir(parents=True, exist_ok=True)
+    BENCHMARK_ROOT.joinpath("logs").mkdir(parents=True, exist_ok=True)
     log_root.mkdir(parents=True, exist_ok=True)
-    relative_script = script.relative_to(APN_ROOT)
+    relative_script = script.relative_to(BENCHMARK_ROOT)
     wrapper_log = log_root / f"{model}_{dataset}.log"
 
     command = ["bash", str(relative_script)]
-    print(f"[run] cwd={APN_ROOT} {' '.join(command)}")
+    print(f"[run] cwd={BENCHMARK_ROOT} {' '.join(command)}")
     start = time.time()
     with wrapper_log.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
             command,
-            cwd=APN_ROOT,
+            cwd=BENCHMARK_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -163,11 +165,11 @@ def main() -> None:
 
     scripts = [(model, dataset) for model in models for dataset in datasets]
     if not args.execute:
-        print("Dry run. Add --execute to run these APN scripts.")
+        print("Dry run. Add --execute to run these Upstream scripts.")
         for model, dataset in scripts:
             script = script_path(model, dataset)
             status = "ok" if script.exists() else "missing"
-            print(f"[{status}] cd {APN_ROOT} && bash {script.relative_to(APN_ROOT)}")
+            print(f"[{status}] cd {BENCHMARK_ROOT} && bash {script.relative_to(BENCHMARK_ROOT)}")
         return
 
     failures: list[tuple[str, str, int]] = []

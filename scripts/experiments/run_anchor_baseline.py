@@ -1,4 +1,4 @@
-"""Run ChronoLM's anchor-family baselines on APN benchmark splits."""
+"""Run AnchorFamily's anchor-family baselines on upstream benchmark splits."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chronolm.cli_utils import slugify, split_csv_values, unique_preserve_order
-from chronolm.experiments.anchor_baseline import (
+from anchorfamily.cli_utils import slugify, split_csv_values, unique_preserve_order
+from anchorfamily.experiments.anchor_baseline import (
     ANCHOR_FAMILY_METHODS,
     ANCHOR_METHOD_SLUGS,
     HISTORY_PERTURBATIONS,
@@ -33,7 +33,7 @@ DATASET_ORDER = ["P12", "MIMIC", "USHCN", "HumanActivity"]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run anchor-family baselines with APN data splits and metrics."
+        description="Run anchor-family baselines with upstream benchmark data splits and metrics."
     )
     parser.add_argument(
         "--dataset",
@@ -70,13 +70,13 @@ def parse_args() -> argparse.Namespace:
         "--seq-len",
         type=int,
         default=None,
-        help="Override the APN default lookback length for every selected dataset.",
+        help="Override the benchmark default lookback length for every selected dataset.",
     )
     parser.add_argument(
         "--pred-len",
         type=int,
         default=None,
-        help="Override the APN default prediction length for every selected dataset.",
+        help="Override the benchmark default prediction length for every selected dataset.",
     )
     parser.add_argument(
         "--auto-strategy",

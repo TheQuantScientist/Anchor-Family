@@ -3,7 +3,9 @@ set -euo pipefail
 
 CONDA_BIN="${CONDA_BIN:-/home/nckh2/miniconda3/bin/conda}"
 ENV_NAME="${ENV_NAME:-mimic37}"
-RAW_DIR="${RAW_DIR:-/home/nckh2/qa/ChronoLM/APN/data/physionet.org/files/mimiciii/1.4}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+RAW_DIR="${RAW_DIR:-$PROJECT_ROOT/vendor/upstream_benchmark/data/physionet.org/files/mimiciii/1.4}"
 PYOMNITS_DIR="${PYOMNITS_DIR:-/home/nckh2/qa/PyOmniTS}"
 TARGET_DIR="${TARGET_DIR:-$HOME/.tsdm/rawdata/MIMIC_III_DeBrouwer2019}"
 EXPECTED_SHA="8106f64292771956f70ccd0ca1a4f7a0a4563fe63d6eff6ee2ef27dc6fdb614a"
